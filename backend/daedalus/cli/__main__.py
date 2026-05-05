@@ -1,0 +1,375 @@
+"""Operational CLI exposed by `python -m daedalus.cli`."""
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+
+import click
+from jsonschema import Draft202012Validator
+from sqlalchemy import select
+
+from daedalus.auth.audit import record as audit_record
+from daedalus.auth.client_certs import mint_client_cert
+from daedalus.auth.passwords import hash_password
+from daedalus.auth.policy import policy_violations
+from daedalus.auth.totp import generate_recovery_codes, hash_recovery_code, new_totp_secret, provisioning_uri
+from daedalus.connectors.schema import CONNECTOR_SCHEMA
+from daedalus.db.base import get_session
+from daedalus.db.models import Connector, Role, User
+
+
+@click.group()
+def cli() -> None:
+    """Daedalus operator commands."""
+
+
+@cli.command("init")
+@click.option("--email", prompt=True)
+@click.option("--display-name", prompt=True)
+@click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
+@click.option("--role", type=click.Choice([role.value for role in Role]), default=Role.owner.value, show_default=True)
+def init_user(email: str, display_name: str, password: str, role: str) -> None:
+    """Create the first operator account and emit TOTP bootstrap data."""
+    asyncio.run(_init_user(email=email, display_name=display_name, password=password, role=role))
+
+
+@cli.command("import-connectors")
+@click.argument("directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def import_connectors(directory: Path) -> None:
+    """Import connector specs from a directory of JSON files."""
+    asyncio.run(_import_connectors(directory))
+
+
+_DEFAULT_CA_CERT = "/run/daedalus/secrets/internal_ca.crt"
+_DEFAULT_CA_KEY = "/run/daedalus/secrets/internal_ca.key"
+
+
+@cli.command("mint-client-cert")
+@click.option("--email", required=True, help="Email of the operator the cert is for.")
+@click.option(
+    "--ca-cert",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=_DEFAULT_CA_CERT,
+    show_default=True,
+    help="PEM-encoded internal CA cert.",
+)
+@click.option(
+    "--ca-key",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=_DEFAULT_CA_KEY,
+    show_default=True,
+    help="PEM-encoded internal CA private key (RSA, no passphrase).",
+)
+@click.option(
+    "--out-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default="./minted-certs",
+    show_default=True,
+    help="Where to drop the .key/.crt/.p12 trio.",
+)
+@click.option("--days", type=int, default=365, show_default=True, help="Cert validity in days.")
+@click.option("--key-bits", type=int, default=4096, show_default=True, help="RSA key size for the operator cert.")
+@click.option(
+    "--p12-password",
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="Password used to encrypt the .p12 bundle (the operator types this when importing into the browser).",
+)
+@click.option(
+    "--pin",
+    is_flag=True,
+    default=False,
+    help="Persist the new cert's SHA-256 fingerprint onto User.pinned_cert_fingerprint so cookies are bound to it at login.",
+)
+def mint_cert(
+    email: str,
+    ca_cert: Path,
+    ca_key: Path,
+    out_dir: Path,
+    days: int,
+    key_bits: int,
+    p12_password: str,
+    pin: bool,
+) -> None:
+    """Issue an mTLS client cert against the internal CA.
+
+    Writes ``<email>.{key,crt,p12}`` into ``--out-dir``. The operator
+    imports the .p12 into their browser; the platform's reverse proxy
+    accepts it because it's signed by the same CA bundle Caddy is
+    pinned to.
+
+    With ``--pin``, the fingerprint is written to
+    ``User.pinned_cert_fingerprint`` so the user's session cookie is
+    bound to *this specific* cert at next login (§10.2).
+    """
+    asyncio.run(
+        _mint_client_cert(
+            email=email,
+            ca_cert=ca_cert,
+            ca_key=ca_key,
+            out_dir=out_dir,
+            days=days,
+            key_bits=key_bits,
+            p12_password=p12_password,
+            pin=pin,
+        )
+    )
+
+
+@cli.command("reset-totp")
+@click.option("--email", required=True, help="Login email of the user to reset.")
+@click.option(
+    "--keep-recovery",
+    is_flag=True,
+    default=False,
+    help="Re-issue TOTP only; do not regenerate recovery codes.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt (useful for scripting).",
+)
+def reset_totp(email: str, keep_recovery: bool, yes: bool) -> None:
+    """Re-issue a user's TOTP secret and (optionally) regenerate recovery codes.
+
+    Run this on the host when a user has lost their authenticator and cannot
+    log in. The new provisioning URI and recovery codes are printed to stdout
+    and never persisted in plaintext — copy them somewhere safe before
+    closing the terminal.
+    """
+    asyncio.run(_reset_totp(email=email, regen_recovery=not keep_recovery, assume_yes=yes))
+
+
+async def _init_user(*, email: str, display_name: str, password: str, role: str) -> None:
+    violations = policy_violations(password)
+    if violations:
+        raise click.ClickException("; ".join(violations))
+
+    recovery_codes = generate_recovery_codes()
+    secret = new_totp_secret()
+
+    async for db in get_session():
+        existing = await db.execute(select(User).where(User.email == email.lower()))
+        if existing.scalar_one_or_none() is not None:
+            raise click.ClickException(f"user already exists: {email.lower()}")
+
+        user = User(
+            email=email.lower(),
+            display_name=display_name,
+            role=Role(role),
+            password_hash=hash_password(password),
+            totp_secret=secret,
+            totp_enrolled_at=None,
+            recovery_codes_hash=[hash_recovery_code(code) for code in recovery_codes],
+        )
+        db.add(user)
+        await db.commit()
+        break
+
+    click.echo(f"created user: {email.lower()}")
+    click.echo(f"totp uri: {provisioning_uri(email.lower(), secret)}")
+    click.echo("recovery codes:")
+    for code in recovery_codes:
+        click.echo(code)
+
+
+async def _import_connectors(directory: Path) -> None:
+    files = sorted(path for path in directory.glob("*.json") if path.is_file())
+    if not files:
+        raise click.ClickException(f"no connector JSON files found in {directory}")
+
+    validator = Draft202012Validator(CONNECTOR_SCHEMA)
+    imported = 0
+
+    async for db in get_session():
+        for file_path in files:
+            spec = json.loads(file_path.read_text())
+            errors = sorted(validator.iter_errors(spec), key=lambda error: list(error.path))
+            if errors:
+                msg = "; ".join(f"{'/'.join(map(str, err.path)) or '<root>'}: {err.message}" for err in errors)
+                raise click.ClickException(f"{file_path.name}: {msg}")
+
+            connector_id = spec["id"]
+            result = await db.execute(select(Connector).where(Connector.connector_id == connector_id))
+            connector = result.scalar_one_or_none()
+            if connector is None:
+                connector = Connector(
+                    connector_id=connector_id,
+                    display_name=spec.get("display_name", connector_id),
+                    spec=spec,
+                )
+                db.add(connector)
+            else:
+                connector.display_name = spec.get("display_name", connector_id)
+                connector.spec = spec
+            imported += 1
+
+        await db.commit()
+        break
+
+    click.echo(f"imported {imported} connector(s) from {directory}")
+
+
+async def _mint_client_cert(
+    *,
+    email: str,
+    ca_cert: Path,
+    ca_key: Path,
+    out_dir: Path,
+    days: int,
+    key_bits: int,
+    p12_password: str,
+    pin: bool,
+) -> None:
+    target = email.strip().lower()
+    display_name = target
+
+    user = None
+    async for db in get_session():
+        result = await db.execute(select(User).where(User.email == target))
+        user = result.scalar_one_or_none()
+        if user is not None:
+            display_name = user.display_name
+        break
+
+    if user is None and pin:
+        raise click.ClickException(f"--pin requires an existing user; no user found: {target}")
+
+    try:
+        minted = mint_client_cert(
+            email=target,
+            display_name=display_name,
+            out_dir=out_dir,
+            ca_cert_path=ca_cert,
+            ca_key_path=ca_key,
+            p12_password=p12_password,
+            days=days,
+            key_bits=key_bits,
+        )
+    except FileNotFoundError as exc:
+        raise click.ClickException(f"missing CA file: {exc}") from exc
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if pin and user is not None:
+        async for db in get_session():
+            result = await db.execute(select(User).where(User.email == target))
+            user = result.scalar_one_or_none()
+            if user is None:
+                raise click.ClickException(f"user vanished mid-mint: {target}")
+            user.pinned_cert_fingerprint = minted.fingerprint_sha256
+            await audit_record(
+                db,
+                actor_user_id=None,
+                action="auth.client_cert_minted",
+                target_kind="user",
+                target_id=str(user.id),
+                payload={
+                    "email": user.email,
+                    "fingerprint_sha256": minted.fingerprint_sha256,
+                    "serial_number": str(minted.serial_number),
+                    "not_after": minted.not_after.isoformat(),
+                    "pinned": True,
+                },
+            )
+            await db.commit()
+            break
+
+    click.echo("")
+    click.echo(f"Minted client cert for {target}.")
+    click.echo(f"  fingerprint (sha256): {minted.fingerprint_sha256}")
+    click.echo(f"  valid until:          {minted.not_after.isoformat()}")
+    click.echo(f"  serial:               {minted.serial_number}")
+    click.echo(f"  key:    {minted.key_path}")
+    click.echo(f"  cert:   {minted.cert_path}")
+    click.echo(f"  bundle: {minted.pkcs12_path}")
+    click.echo("")
+    click.echo("Import the .p12 into the operator's browser using the password you just set.")
+    if pin and user is not None:
+        click.echo("")
+        click.echo("Fingerprint pinned on the user — sessions will only be issued for this cert.")
+
+
+async def _reset_totp(*, email: str, regen_recovery: bool, assume_yes: bool) -> None:
+    """Replace TOTP secret + (optional) recovery codes for the user.
+
+    Also clears any active sessions and the failed-login lockout so the user
+    can log straight back in with the freshly enrolled authenticator.
+    """
+    from datetime import datetime, timezone
+
+    from daedalus.db.models import Session as SessionModel
+
+    target = email.strip().lower()
+
+    async for db in get_session():
+        result = await db.execute(select(User).where(User.email == target))
+        user = result.scalar_one_or_none()
+        if user is None:
+            raise click.ClickException(f"no user found: {target}")
+
+        if not assume_yes:
+            click.echo(
+                f"About to reset TOTP for {user.email} (role={user.role.value})."
+                + (" Recovery codes will also be regenerated." if regen_recovery else "")
+            )
+            click.confirm("Continue?", abort=True)
+
+        new_secret = new_totp_secret()
+        user.totp_secret = new_secret
+        user.totp_enrolled_at = None
+        user.failed_login_count = 0
+        user.locked_until = None
+
+        new_codes: list[str] = []
+        if regen_recovery:
+            new_codes = generate_recovery_codes()
+            user.recovery_codes_hash = [hash_recovery_code(code) for code in new_codes]
+
+        # Revoke existing sessions so the lost device can't keep the user
+        # signed in (defence in depth — the spec calls for this when 3FA is
+        # being rebuilt).
+        now = datetime.now(timezone.utc)
+        sessions_res = await db.execute(
+            select(SessionModel).where(
+                SessionModel.user_id == user.id,
+                SessionModel.revoked_at.is_(None),
+            )
+        )
+        for session in sessions_res.scalars():
+            session.revoked_at = now
+
+        await audit_record(
+            db,
+            actor_user_id=None,
+            action="auth.totp_reset_offline",
+            target_kind="user",
+            target_id=str(user.id),
+            payload={
+                "email": user.email,
+                "regenerated_recovery_codes": regen_recovery,
+            },
+        )
+
+        await db.commit()
+        break
+
+    click.echo("")
+    click.echo(f"TOTP reset for {target}.")
+    click.echo(f"Provisioning URI (scan into the authenticator):")
+    click.echo(f"  {provisioning_uri(target, new_secret)}")
+    if regen_recovery:
+        click.echo("")
+        click.echo("New recovery codes — store these somewhere safe; they're shown only once:")
+        for code in new_codes:
+            click.echo(f"  {code}")
+    click.echo("")
+    click.echo("All active sessions for this user have been revoked.")
+
+
+if __name__ == "__main__":
+    cli()

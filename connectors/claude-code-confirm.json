@@ -1,0 +1,48 @@
+{
+  "id": "claude-code-confirm",
+  "display_name": "Claude Code (confirm)",
+  "description": "Standard Claude Code with permission prompts on file mods and shell commands.",
+  "command": "claude",
+  "args": ["--permission-mode=ask"],
+  "env": {
+    "ANTHROPIC_API_KEY": "{{secret:anthropic_key}}"
+  },
+  "workdir": "{{project.workspace_path}}",
+  "permission_profile": "confirm",
+  "input_format": {
+    "kind": "stdin_prompt",
+    "template": "Task: {{task.title}}\n\n{{task.description}}\n\nAcceptance criteria:\n{{task.acceptance_criteria}}\n"
+  },
+  "done_signal": {
+    "kind": "regex",
+    "pattern": "<<TASK_DONE>>|^DONE$"
+  },
+  "exit_on_done": true,
+  "verify_commands": [
+    "git status --porcelain",
+    "test -f package.json && npm test --silent || true",
+    "test -f pyproject.toml && (ruff check . && pytest -q) || true"
+  ],
+  "argus_profile": {
+    "command": "claude",
+    "args": ["--permission-mode=read-only"],
+    "workdir_readonly": true
+  },
+  "resource_limits": {
+    "cpu_shares": 1024,
+    "memory_mb": 4096,
+    "wall_clock_minutes": 60,
+    "idle_output_minutes": 10
+  },
+  "interrupt": {
+    "soft": "SIGINT",
+    "hard": "SIGTERM",
+    "kill_grace_seconds": 5
+  },
+  "tags": ["coding", "anthropic", "safe"],
+  "usage_parser": {
+    "kind": "claude",
+    "cost_per_input_micros": 3000000,
+    "cost_per_output_micros": 15000000
+  }
+}

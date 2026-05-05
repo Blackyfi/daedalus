@@ -1,0 +1,52 @@
+{
+  "id": "claude-code-interactive",
+  "display_name": "Claude Code (live)",
+  "description": "Interactive Claude Code with the full TUI streamed to the browser. Take over input from the live runner panel and steer the agent in real time. The agent ends the run by printing '<<TASK_DONE>>' on a line by itself; Daedalus snapshots the worktree pre-flight so you can roll back from the run panel if anything goes sideways.",
+  "command": "claude",
+  "args": [
+    "--dangerously-skip-permissions"
+  ],
+  "env": {
+    "_DAEDALUS_AUTH_NOTE": "blank — `claude` reads OAuth from /root/.claude. Setting ANTHROPIC_API_KEY here would force API-key billing instead of the subscription."
+  },
+  "workdir": "{{project.workspace_path}}",
+  "permission_profile": "yolo",
+  "input_format": {
+    "kind": "stdin_prompt",
+    "template": "Task: {{task.title}}\n\n{{task.description}}\n\nAcceptance criteria:\n{{task.acceptance_criteria}}\n\nWhen you finish (whether you succeeded or gave up), print exactly this on its own line:\n<<TASK_DONE>>\n\nThis is how Daedalus detects completion and ends the run. Don't print it earlier.\n"
+  },
+  "prompt_as_arg": true,
+  "done_signal": {
+    "kind": "regex",
+    "pattern": "<<TASK_DONE>>"
+  },
+  "exit_on_done": true,
+  "verify_commands": [
+    "git status --porcelain",
+    "test -f package.json && npm test --silent || true",
+    "test -f pyproject.toml && (ruff check . && pytest -q) || true"
+  ],
+  "argus_profile": {
+    "command": "claude",
+    "args": ["--permission-mode=read-only"],
+    "workdir_readonly": true
+  },
+  "resource_limits": {
+    "cpu_shares": 1024,
+    "memory_mb": 4096,
+    "wall_clock_minutes": 90,
+    "idle_output_minutes": 15
+  },
+  "interrupt": {
+    "soft": "SIGINT",
+    "hard": "SIGTERM",
+    "kill_grace_seconds": 5
+  },
+  "tags": ["coding", "anthropic", "interactive", "live"],
+  "egress_allowlist": ["api.anthropic.com"],
+  "usage_parser": {
+    "kind": "claude",
+    "cost_per_input_micros": 3000000,
+    "cost_per_output_micros": 15000000
+  }
+}

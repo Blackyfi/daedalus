@@ -1,0 +1,1 @@
+"""Mnemosyne object storage helpers."""

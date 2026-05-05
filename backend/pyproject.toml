@@ -1,0 +1,54 @@
+[project]
+name = "daedalus"
+version = "0.1.0"
+description = "Daedalus — agent orchestration platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "email-validator>=2.2",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.13",
+    "redis[hiredis]>=5.2",
+    "argon2-cffi>=23.1",
+    "pyotp>=2.9",
+    "qrcode[pil]>=8.0",
+    "itsdangerous>=2.2",
+    "httpx>=0.28",
+    "jsonschema>=4.23",
+    "python-multipart>=0.0.18",
+    "boto3>=1.35",
+    "websockets>=14.1",
+    "ptyprocess>=0.7",
+    "click>=8.1",
+    "structlog>=24.4",
+    "anyio>=4.6",
+    "aiosmtplib>=3.0",
+    "webauthn>=2.5",
+    "prometheus-client>=0.21",
+    "prometheus-fastapi-instrumentator>=7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "httpx>=0.28",
+    "asgi-lifespan>=2.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "RUF"]
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

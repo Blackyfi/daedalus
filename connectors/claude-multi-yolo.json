@@ -1,0 +1,48 @@
+{
+  "id": "claude-multi-yolo",
+  "display_name": "Claude Multi-Agent (yolo)",
+  "description": "Multi-agent Claude variant with permissions skipped. Daedalus snapshots the workspace before each run.",
+  "command": "claude-multi",
+  "args": ["--dangerously-skip-permissions", "--max-subagents=4"],
+  "env": {
+    "ANTHROPIC_API_KEY": "{{secret:anthropic_key}}"
+  },
+  "workdir": "{{project.workspace_path}}",
+  "permission_profile": "yolo",
+  "input_format": {
+    "kind": "stdin_prompt",
+    "template": "Goal: {{task.title}}\n\n{{task.description}}\n\nAcceptance criteria:\n{{task.acceptance_criteria}}\n\nDelegate sub-tasks as needed; emit <<TASK_DONE>> when finished.\n"
+  },
+  "done_signal": {
+    "kind": "regex",
+    "pattern": "<<TASK_DONE>>|^DONE$"
+  },
+  "exit_on_done": true,
+  "verify_commands": [
+    "git status --porcelain",
+    "test -f package.json && npm test --silent || true",
+    "test -f pyproject.toml && (ruff check . && pytest -q) || true"
+  ],
+  "argus_profile": {
+    "command": "claude",
+    "args": ["--permission-mode=read-only"],
+    "workdir_readonly": true
+  },
+  "resource_limits": {
+    "cpu_shares": 2048,
+    "memory_mb": 8192,
+    "wall_clock_minutes": 180,
+    "idle_output_minutes": 20
+  },
+  "interrupt": {
+    "soft": "SIGINT",
+    "hard": "SIGTERM",
+    "kill_grace_seconds": 10
+  },
+  "tags": ["coding", "anthropic", "multi-agent", "yolo"],
+  "usage_parser": {
+    "kind": "claude",
+    "cost_per_input_micros": 3000000,
+    "cost_per_output_micros": 15000000
+  }
+}

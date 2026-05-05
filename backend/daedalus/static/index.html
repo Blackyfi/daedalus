@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Daedalus Control Room</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Daedalus</p>
+          <h1>Control Room</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="refresh-all" class="ghost">Refresh</button>
+          <button id="logout" class="ghost hidden">Log Out</button>
+        </div>
+      </header>
+
+      <section id="status-banner" class="banner">Connecting…</section>
+
+      <section id="auth-view" class="auth-grid">
+        <article class="panel auth-panel">
+          <h2>Sign In</h2>
+          <p class="muted">mTLS is still enforced by the reverse proxy. This page handles the password, email OTP, and TOTP steps after the client certificate is accepted.</p>
+
+          <form id="password-form" class="stack">
+            <label>Email <input name="email" type="email" autocomplete="username" required></label>
+            <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+            <button type="submit">1. Verify Password</button>
+          </form>
+
+          <form id="otp-form" class="stack hidden">
+            <label>Email OTP <input name="code" type="text" inputmode="numeric" required></label>
+            <button type="submit">2. Verify Email OTP</button>
+          </form>
+
+          <form id="totp-form" class="stack hidden">
+            <label>TOTP or Recovery Code <input name="code" type="text" autocomplete="one-time-code" required></label>
+            <button type="submit">3. Complete Login</button>
+          </form>
+        </article>
+
+        <article class="panel auth-panel">
+          <h2>Platform State</h2>
+          <dl class="facts">
+            <div><dt>API</dt><dd id="health-api">Checking…</dd></div>
+            <div><dt>Realtime</dt><dd id="health-realtime">Ready after login</dd></div>
+            <div><dt>Docs</dt><dd><a href="/api/docs">Open OpenAPI</a></dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section id="dashboard-view" class="dashboard hidden">
+        <aside class="panel sidebar">
+          <div class="panel-heading">
+            <h2>Projects</h2>
+            <button id="reload-projects" class="ghost small">Reload</button>
+          </div>
+          <div id="project-list" class="list"></div>
+          <form id="project-form" class="stack compact">
+            <h3>Create Project</h3>
+            <label>Name <input name="name" required></label>
+            <label>Description <textarea name="description" rows="2"></textarea></label>
+            <label>Workspace Path <input name="workspace_path" placeholder="relative/path" required></label>
+            <label>Default Connector <select name="default_connector_id"></select></label>
+            <button type="submit">Create Project</button>
+          </form>
+        </aside>
+
+        <section class="workspace">
+          <div class="workspace-grid">
+            <article class="panel">
+              <div class="panel-heading">
+                <h2 id="project-title">No project selected</h2>
+                <button id="trigger-plan" class="ghost small">Plan From Ideas</button>
+              </div>
+              <p id="project-meta" class="muted">Create a project or select one from the left rail.</p>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <h2>Connectors</h2>
+                <button id="reload-connectors" class="ghost small">Reload</button>
+              </div>
+              <div id="connector-list" class="pill-list"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <h2>Ideas</h2>
+                <button id="reload-ideas" class="ghost small">Reload</button>
+              </div>
+              <div id="idea-list" class="list"></div>
+              <form id="idea-form" class="stack compact">
+                <label>Idea <textarea name="text" rows="3" required></textarea></label>
+                <label>Tags <input name="tags" placeholder="comma,separated"></label>
+                <button type="submit">Add Idea</button>
+              </form>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <h2>Notes</h2>
+                <button id="reload-notes" class="ghost small">Reload</button>
+              </div>
+              <div id="note-list" class="list"></div>
+              <form id="note-form" class="stack compact">
+                <label>Title <input name="title" required></label>
+                <label>Body <textarea name="body" rows="4"></textarea></label>
+                <button type="submit">Save Note</button>
+              </form>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <h2>Plan Proposals</h2>
+                <button id="reload-plans" class="ghost small">Reload</button>
+              </div>
+              <p class="muted">Drafts produced by the planning job. Edit the JSON, then Confirm to commit tasks to the project, or Discard to drop the proposal.</p>
+              <div id="plan-list" class="list"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <h2>Tasks</h2>
+                <button id="reload-tasks" class="ghost small">Reload</button>
+              </div>
+              <div id="task-list" class="list"></div>
+              <form id="task-form" class="stack compact">
+                <label>Title <input name="title" required></label>
+                <label>Description <textarea name="description" rows="3"></textarea></label>
+                <label>Acceptance Criteria <textarea name="acceptance_criteria" rows="3"></textarea></label>
+                <div class="inline-fields">
+                  <label>Priority
+                    <select name="priority">
+                      <option>P0</option>
+                      <option>P1</option>
+                      <option selected>P2</option>
+                      <option>P3</option>
+                    </select>
+                  </label>
+                  <label>Connector
+                    <select name="connector_id"></select>
+                  </label>
+                </div>
+                <label>Tags <input name="tags" placeholder="comma,separated"></label>
+                <button type="submit">Create Task</button>
+              </form>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <h2>Runs</h2>
+                <button id="reload-runs" class="ghost small">Reload</button>
+              </div>
+              <div id="run-list" class="list"></div>
+              <div class="list-card history-card">
+                <header>
+                  <h4>Transcript History</h4>
+                </header>
+                <p class="muted">Load the persisted transcript for the currently selected run when live PTY streaming is no longer available.</p>
+                <button id="load-transcript" class="ghost small">Load Transcript</button>
+              </div>
+            </article>
+
+            <article class="panel terminal-panel">
+              <div class="panel-heading">
+                <h2>Terminal</h2>
+                <div class="terminal-actions">
+                  <button data-run-action="pause" class="ghost small">Pause</button>
+                  <button data-run-action="resume" class="ghost small">Resume</button>
+                  <button data-run-action="interrupt" class="ghost small">Interrupt</button>
+                  <button data-run-action="kill" class="ghost small">Kill</button>
+                </div>
+              </div>
+              <p id="terminal-meta" class="muted">Attach to a run to mirror PTY output.</p>
+              <pre id="terminal-output" class="terminal-output"></pre>
+              <form id="terminal-form" class="terminal-input">
+                <input id="terminal-text" placeholder="Type into the running PTY">
+                <button type="submit">Send</button>
+              </form>
+              <div id="argus-report" class="argus-report muted">No Argus report loaded.</div>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>
