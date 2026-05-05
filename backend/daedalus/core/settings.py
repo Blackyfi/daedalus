@@ -1,0 +1,102 @@
+"""Runtime configuration. Pulled from env vars; cached."""
+from __future__ import annotations
+
+from functools import lru_cache
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", case_sensitive=False, populate_by_name=True
+    )
+
+    # --- core ---
+    public_url: str = Field("https://daedalus.your.lan", alias="DAEDALUS_PUBLIC_URL")
+    role: str = Field("api", alias="ROLE")  # api | iris | hermes | talos | argus
+
+    # --- db / redis / s3 ---
+    database_url: str = Field(..., alias="DATABASE_URL")
+    redis_url: str = Field(..., alias="REDIS_URL")
+    s3_endpoint: str = Field("http://minio:9000", alias="S3_ENDPOINT")
+    s3_access_key: str = Field("daedalus", alias="S3_ACCESS_KEY")
+    s3_secret_key: str = Field("changeme-minio", alias="S3_SECRET_KEY")
+    minio_bucket: str = Field("daedalus", alias="MINIO_BUCKET")
+    objects_dir: str = Field("/tmp/daedalus-objects", alias="DAEDALUS_OBJECTS_DIR")
+
+    # --- auth ---
+    session_secret: str = Field(..., alias="SESSION_SECRET")
+    password_pepper: str = Field(..., alias="PASSWORD_PEPPER")
+    session_idle_minutes: int = Field(30, alias="SESSION_IDLE_MINUTES")
+    session_hard_hours: int = Field(12, alias="SESSION_HARD_HOURS")
+    lockout_threshold: int = Field(5, alias="LOCKOUT_THRESHOLD")
+    lockout_minutes: int = Field(15, alias="LOCKOUT_MINUTES")
+    ip_ban_threshold: int = Field(25, alias="IP_BAN_THRESHOLD")
+    ip_ban_minutes: int = Field(60, alias="IP_BAN_MINUTES")
+    # When True (legacy / multi-org deployments) the API requires
+    # `X-Client-Cert-Fingerprint` from the reverse proxy and binds sessions
+    # to it. When False (self-hosted single-org behind Tailscale + Caddy
+    # `tls internal`) sessions bind to a synthetic sentinel — auth still
+    # goes through password + email OTP + TOTP/WebAuthn.
+    require_client_cert: bool = Field(True, alias="REQUIRE_CLIENT_CERT")
+
+    # --- smtp ---
+    smtp_host: str = Field("localhost", alias="SMTP_HOST")
+    smtp_port: int = Field(587, alias="SMTP_PORT")
+    smtp_user: str | None = Field(None, alias="SMTP_USER")
+    smtp_password: str | None = Field(None, alias="SMTP_PASSWORD")
+    smtp_from: str = Field("daedalus@localhost", alias="SMTP_FROM")
+    smtp_tls: bool = Field(True, alias="SMTP_TLS")
+
+    # --- talos ---
+    workspaces_root: str = Field("/workspaces", alias="TALOS_WORKSPACES_ROOT")
+    connectors_dir: str = Field("/etc/daedalus/connectors", alias="TALOS_CONNECTORS_DIR")
+
+    # --- hermes scheduling ---
+    # Global ceiling on concurrent runs across all projects (one Daedalus-managed
+    # run per project; the cap limits how many *projects* can run at once).
+    # Tune to your host's CPU/RAM headroom. With Pro Max-x20 + a safelock fallback
+    # the meaningful limit is the box, not the API quota.
+    max_concurrent_projects: int = Field(4, alias="MAX_CONCURRENT_PROJECTS")
+    # How often the scheduler scans queues for claimable work, in seconds.
+    scheduler_poll_seconds: float = Field(0.5, alias="SCHEDULER_POLL_SECONDS")
+    # Project-lease TTL is connector wall-clock + this grace window.
+    project_lease_grace_seconds: int = Field(300, alias="PROJECT_LEASE_GRACE_SECONDS")
+    # Heartbeat interval for refreshing the project lease while a run is active.
+    project_lease_heartbeat_seconds: int = Field(60, alias="PROJECT_LEASE_HEARTBEAT_SECONDS")
+
+    # --- pythia (subscription oracle) ---
+    pythia_refresh_seconds: int = Field(600, alias="PYTHIA_REFRESH_SECONDS")
+    pythia_probe_timeout_seconds: float = Field(10.0, alias="PYTHIA_PROBE_TIMEOUT_SECONDS")
+    pythia_cache_ttl_seconds: int = Field(1800, alias="PYTHIA_CACHE_TTL_SECONDS")
+
+    # --- iris ---
+    iris_port: int = Field(8001, alias="IRIS_PORT")
+
+    # --- internal service-to-service ---
+    # Workers (hermes/talos) reach the API container directly over backnet,
+    # not via the public mTLS URL.
+    internal_api_base: str = Field("http://api:8000", alias="INTERNAL_API_BASE")
+
+    # --- llm (used by Argus + planning) ---
+    # Backend selector:
+    #   "cli"  → shell out to the local `claude` CLI (uses Pro/Max OAuth).
+    #            Default — zero per-token cost on top of the subscription.
+    #   "http" → speak the OpenAI /v1/chat/completions shape against
+    #            LLM_BASE_URL (vLLM / NIM / OpenAI / LiteLLM proxy / etc.).
+    llm_backend: str = Field("cli", alias="LLM_BACKEND")
+
+    # HTTP backend config — ignored when LLM_BACKEND=cli.
+    llm_base_url: str = Field("http://llm:8000/v1", alias="LLM_BASE_URL")
+    llm_api_key: str | None = Field(None, alias="LLM_API_KEY")
+    llm_model: str = Field("Qwen/Qwen2.5-Coder-32B-Instruct", alias="LLM_MODEL")
+    llm_verifier_model: str | None = Field(None, alias="LLM_VERIFIER_MODEL")
+    llm_timeout_seconds: float = Field(120.0, alias="LLM_TIMEOUT_SECONDS")
+    llm_max_diff_chars: int = Field(60_000, alias="LLM_MAX_DIFF_CHARS")
+    llm_max_log_chars: int = Field(20_000, alias="LLM_MAX_LOG_CHARS")
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()  # type: ignore[call-arg]

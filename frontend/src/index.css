@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import "@xterm/xterm/css/xterm.css";
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html,
+body {
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: theme("colors.bg");
+  color: theme("colors.text");
+}
+
+.btn {
+  @apply inline-flex items-center gap-1.5 rounded border border-border bg-panel2 px-3 py-1.5 text-xs uppercase tracking-wide hover:bg-border disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-panel2;
+}
+.btn-primary {
+  @apply border-accent text-accent hover:bg-accent/10;
+}
+.btn-danger {
+  @apply border-danger text-danger hover:bg-danger/10;
+}
+.btn-warning {
+  @apply border-warning text-warning hover:bg-warning/10;
+}
+
+.panel {
+  @apply rounded border border-border bg-panel p-4;
+}
+.field {
+  @apply w-full rounded border border-border bg-panel2 px-2 py-1 text-sm focus:border-accent focus:outline-none;
+}
+.label {
+  @apply mb-1 block text-xs uppercase tracking-wide text-muted;
+}
+
+.tag {
+  @apply inline-block rounded bg-panel2 border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted mr-1;
+}
+
+.status-pill {
+  @apply inline-block rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide;
+}
+.status-backlog,
+.status-ready { @apply bg-panel2 text-muted; }
+.status-in_progress,
+.status-running,
+.status-claimed,
+.status-queued { @apply bg-warning/10 text-warning; }
+.status-verifying { @apply bg-accent/10 text-accent; }
+.status-needs_fixes,
+.status-failed,
+.status-aborted_unsafe { @apply bg-danger/10 text-danger; }
+.status-done,
+.status-completed { @apply bg-accent/10 text-accent; }
+.status-cancelled { @apply bg-panel2 text-muted; }

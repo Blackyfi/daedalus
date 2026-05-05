@@ -1,0 +1,27 @@
+# LiteLLM proxy — converts the OpenAI `/v1/chat/completions` shape that
+# Daedalus's planner / Argus speak into Anthropic's native API. One
+# ANTHROPIC_API_KEY (read from env) authenticates upstream; the proxy
+# itself is unauthenticated since it only lives on `backnet` and is
+# unreachable from outside the stack.
+
+model_list:
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-opus-4-7
+    litellm_params:
+      model: anthropic/claude-opus-4-7
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+litellm_settings:
+  # Anthropic doesn't accept some OpenAI-only parameters (e.g.
+  # `frequency_penalty`); drop them silently rather than 400-ing.
+  drop_params: true
+  set_verbose: false
+  request_timeout: 300
+  num_retries: 2

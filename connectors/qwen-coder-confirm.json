@@ -1,0 +1,44 @@
+{
+  "id": "qwen-coder-confirm",
+  "display_name": "Qwen Coder (confirm)",
+  "description": "Qwen-Coder CLI with confirmation-style permission profile.",
+  "command": "qwen",
+  "args": ["--profile=confirm"],
+  "env": {
+    "QWEN_API_KEY": "{{secret:qwen_key}}"
+  },
+  "workdir": "{{project.workspace_path}}",
+  "permission_profile": "confirm",
+  "input_format": {
+    "kind": "stdin_prompt",
+    "template": "Task: {{task.title}}\n\n{{task.description}}\n\nAcceptance criteria:\n{{task.acceptance_criteria}}\n"
+  },
+  "done_signal": {
+    "kind": "regex",
+    "pattern": "<<TASK_DONE>>|^DONE$"
+  },
+  "exit_on_done": true,
+  "verify_commands": [
+    "git status --porcelain"
+  ],
+  "argus_profile": {
+    "command": "qwen",
+    "args": ["--profile=read-only"],
+    "workdir_readonly": true
+  },
+  "resource_limits": {
+    "cpu_shares": 1024,
+    "memory_mb": 4096,
+    "wall_clock_minutes": 45,
+    "idle_output_minutes": 10
+  },
+  "interrupt": {
+    "soft": "SIGINT",
+    "hard": "SIGTERM",
+    "kill_grace_seconds": 5
+  },
+  "tags": ["coding", "qwen", "safe"],
+  "usage_parser": {
+    "kind": "openai"
+  }
+}

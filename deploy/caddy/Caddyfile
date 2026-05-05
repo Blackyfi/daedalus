@@ -1,0 +1,54 @@
+# Daedalus reverse proxy.
+#
+# State of the art for self-hosted single-org behind Tailscale:
+# Caddy auto-issues server certs from its own internal CA (`tls internal`)
+# and the user adds the corresponding root cert to their browser trust
+# store once. mTLS is *not* enforced at the proxy — Tailscale ACLs do
+# the network-level identity job, and Daedalus's 3-factor auth +
+# WebAuthn handles human identity.
+#
+# To re-enable mTLS (multi-org / hostile-network deployments):
+#   1. Set `REQUIRE_CLIENT_CERT=true` in `.env`.
+#   2. Drop `internal_ca.crt` into deploy/secrets/.
+#   3. Restore the `client_auth { mode require_and_verify ... }` block
+#      below from git history.
+
+{
+	# Let Caddy auto-manage cert issuance via the internal issuer.
+	# `auto_https off` would disable on-demand cert generation — we want
+	# the opposite, since `tls internal` issues server certs from
+	# Caddy's local CA.
+	admin off
+}
+
+{$PUBLIC_HOST:daedalus.your.lan}:443, {$LOCAL_HOST:daedalus}:443, localhost:443 {
+	tls internal
+
+	encode gzip zstd
+
+	# Defensive baseline.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Frame-Options             "DENY"
+		X-Content-Type-Options      "nosniff"
+		Referrer-Policy             "no-referrer"
+		Content-Security-Policy     "default-src 'self'; connect-src 'self' wss://*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+		-Server
+	}
+
+	# WebSockets — terminal mirror, project events, queue.
+	@ws {
+		header Connection *Upgrade*
+		header Upgrade websocket
+		path /ws/*
+	}
+	reverse_proxy @ws iris:8001
+
+	# REST API.
+	@api path /api/*
+	reverse_proxy @api api:8000
+
+	# React SPA served by the dedicated nginx-based `frontend` container.
+	@spa not path /ws/* /api/*
+	reverse_proxy @spa frontend:80
+}

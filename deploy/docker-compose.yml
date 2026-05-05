@@ -1,0 +1,419 @@
+# Daedalus — docker compose topology (see §14 of project-plan.md)
+# Three networks: frontnet (caddy<->api/iris), backnet (api<->workers/db/redis/minio),
+# agentnet (talos/argus, egress-filtered).
+
+x-common-env: &common-env
+  DATABASE_URL: ${DATABASE_URL}
+  REDIS_URL: ${REDIS_URL}
+  S3_ENDPOINT: ${S3_ENDPOINT}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+  S3_SECRET_KEY: ${S3_SECRET_KEY}
+  MINIO_BUCKET: ${MINIO_BUCKET}
+  SESSION_SECRET: ${SESSION_SECRET}
+  PASSWORD_PEPPER: ${PASSWORD_PEPPER}
+  SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES}
+  SESSION_HARD_HOURS: ${SESSION_HARD_HOURS}
+  LOCKOUT_THRESHOLD: ${LOCKOUT_THRESHOLD}
+  LOCKOUT_MINUTES: ${LOCKOUT_MINUTES}
+  IP_BAN_THRESHOLD: ${IP_BAN_THRESHOLD}
+  IP_BAN_MINUTES: ${IP_BAN_MINUTES}
+  SMTP_HOST: ${SMTP_HOST}
+  SMTP_PORT: ${SMTP_PORT}
+  SMTP_USER: ${SMTP_USER}
+  SMTP_PASSWORD: ${SMTP_PASSWORD}
+  SMTP_FROM: ${SMTP_FROM}
+  SMTP_TLS: ${SMTP_TLS}
+  DAEDALUS_PUBLIC_URL: ${DAEDALUS_PUBLIC_URL}
+  TALOS_WORKSPACES_ROOT: ${TALOS_WORKSPACES_ROOT}
+  TALOS_CONNECTORS_DIR: ${TALOS_CONNECTORS_DIR}
+  INTERNAL_API_BASE: ${INTERNAL_API_BASE:-http://api:8000}
+  REQUIRE_CLIENT_CERT: ${REQUIRE_CLIENT_CERT:-true}
+  LLM_BACKEND: ${LLM_BACKEND:-cli}
+  LLM_BASE_URL: ${LLM_BASE_URL:-http://litellm:4000}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-claude-sonnet-4-6}
+  LLM_VERIFIER_MODEL: ${LLM_VERIFIER_MODEL:-}
+  LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-180}
+  LLM_MAX_DIFF_CHARS: ${LLM_MAX_DIFF_CHARS:-60000}
+  LLM_MAX_LOG_CHARS: ${LLM_MAX_LOG_CHARS:-20000}
+  # NB: ANTHROPIC_API_KEY is *deliberately* not in this block. Setting it
+  # would make the in-container `claude` CLI prefer API-key auth over the
+  # subscription OAuth token — exactly what we don't want. The LiteLLM
+  # service still receives it through its own service-level `environment`.
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "${DAEDALUS_HTTPS_PORT:-9443}:443"
+      - "${DAEDALUS_HTTP_PORT:-9080}:80"
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-daedalus.your.lan}
+      LOCAL_HOST: ${LOCAL_HOST:-daedalus}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [frontnet]
+    depends_on: [api, iris, frontend]
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks: [frontnet]
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        DAEDALUS_INSTALL_EXTRAS: ${DAEDALUS_INSTALL_EXTRAS:-}
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      ROLE: api
+    volumes:
+      - ../connectors:/etc/daedalus/connectors:ro
+      - ${HOST_WORKSPACES_ROOT:-../deploy/workspaces}:/workspaces
+      # OAuth + config for the in-container `claude` CLI. RW because
+      # the CLI refreshes credentials in-place.
+      - ${HOST_CLAUDE_DIR:-~/.claude}:/root/.claude
+    networks: [frontnet, backnet]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      minio:    { condition: service_started }
+
+  iris:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        DAEDALUS_INSTALL_EXTRAS: ${DAEDALUS_INSTALL_EXTRAS:-}
+    restart: unless-stopped
+    command: ["python", "-m", "daedalus.iris.main"]
+    environment:
+      <<: *common-env
+      ROLE: iris
+    volumes:
+      - ${HOST_CLAUDE_DIR:-~/.claude}:/root/.claude
+    networks: [frontnet, backnet]
+    depends_on:
+      redis: { condition: service_healthy }
+
+  hermes:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        DAEDALUS_INSTALL_EXTRAS: ${DAEDALUS_INSTALL_EXTRAS:-}
+    restart: unless-stopped
+    command: ["python", "-m", "daedalus.hermes.worker"]
+    environment:
+      <<: *common-env
+      ROLE: hermes
+    volumes:
+      - ${HOST_CLAUDE_DIR:-~/.claude}:/root/.claude
+    networks: [backnet]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+
+  talos:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        DAEDALUS_INSTALL_EXTRAS: ${DAEDALUS_INSTALL_EXTRAS:-}
+    restart: unless-stopped
+    command: ["python", "-m", "daedalus.talos"]
+    # `claude --dangerously-skip-permissions` refuses to run as root, so
+    # talos drops to the `daedalus` user pre-baked in the image. The uid
+    # matches the host operator (1000:1000) so bind-mounted workspaces and
+    # ~/.claude are read/write without chown gymnastics.
+    user: "1000:1000"
+    environment:
+      <<: *common-env
+      ROLE: talos
+      HOME: /home/daedalus
+    # privileged for cgroups v2 + PTY allocation
+    cap_add: [SYS_PTRACE, SYS_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ../connectors:/etc/daedalus/connectors:ro
+      - ${HOST_WORKSPACES_ROOT:-../deploy/workspaces}:/workspaces
+      - ../deploy/secrets:/run/daedalus/secrets:ro
+      - ${HOST_CLAUDE_DIR:-~/.claude}:/home/daedalus/.claude
+      # claude looks for non-credential preferences (project trust, MCP, etc.)
+      # at $HOME/.claude.json — sibling to the .claude/ directory, not inside it.
+      - ${HOST_CLAUDE_DIR:-~/.claude}/../.claude.json:/home/daedalus/.claude.json
+    networks: [backnet, agentnet]
+    depends_on:
+      redis: { condition: service_healthy }
+
+  argus-worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        DAEDALUS_INSTALL_EXTRAS: ${DAEDALUS_INSTALL_EXTRAS:-}
+    restart: unless-stopped
+    command: ["python", "-m", "daedalus.talos"]
+    user: "1000:1000"
+    environment:
+      <<: *common-env
+      ROLE: argus
+      HOME: /home/daedalus
+    cap_add: [SYS_PTRACE]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ../connectors:/etc/daedalus/connectors:ro
+      # Argus runs are inherently read-only against the host repo; we mount
+      # the same workspaces root but read-only here as a defence-in-depth
+      # constraint on top of the connector's argus_profile.
+      - ${HOST_WORKSPACES_ROOT:-../deploy/workspaces}:/workspaces:ro
+      - ${HOST_CLAUDE_DIR:-~/.claude}:/home/daedalus/.claude
+      - ${HOST_CLAUDE_DIR:-~/.claude}/../.claude.json:/home/daedalus/.claude.json
+      - ../deploy/secrets:/run/daedalus/secrets:ro
+    networks: [backnet, agentnet]
+    depends_on:
+      redis: { condition: service_healthy }
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+    volumes:
+      - daedalus_data:/var/lib/postgresql/data
+    networks: [backnet]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - daedalus_redis:/data
+    networks: [backnet]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - daedalus_objects:/data
+    networks: [backnet]
+
+  agentnet-firewall:
+    build:
+      context: ./agentnet-firewall
+    restart: unless-stopped
+    # Talks to the host kernel's netfilter directly. host-network is required
+    # because the rules live on the host's DOCKER-USER chain, not on any
+    # docker-attached interface.
+    network_mode: host
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CONNECTORS_DIR: /etc/daedalus/connectors
+      AGENTNET_FIREWALL_RELOAD_SECONDS: ${AGENTNET_FIREWALL_RELOAD_SECONDS:-120}
+      AGENTNET_FIREWALL_BASELINE_HOSTS: ${AGENTNET_FIREWALL_BASELINE_HOSTS:-api.anthropic.com,api.openai.com}
+      # Pin the agentnet bridge name if auto-detect picks the wrong one.
+      AGENTNET_BRIDGE_NAME: ${AGENTNET_BRIDGE_NAME:-}
+    volumes:
+      - ../connectors:/etc/daedalus/connectors:ro
+
+  pg-backup:
+    build:
+      context: ./pg-backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_HOST:     postgres
+      POSTGRES_PORT:     "5432"
+      S3_ENDPOINT:       ${S3_ENDPOINT}
+      S3_ACCESS_KEY:     ${S3_ACCESS_KEY}
+      S3_SECRET_KEY:     ${S3_SECRET_KEY}
+      PG_BACKUP_BUCKET:  ${PG_BACKUP_BUCKET:-daedalus-backups}
+      PG_BACKUP_SCHEDULE: ${PG_BACKUP_SCHEDULE:-30 2 * * *}
+      PG_BACKUP_RETENTION_DAYS: ${PG_BACKUP_RETENTION_DAYS:-30}
+    networks: [backnet]
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio:    { condition: service_started }
+
+  # ---- LiteLLM proxy: OpenAI-shape → Anthropic ----
+  # Always-on. Daedalus's planner and Argus call /v1/chat/completions on
+  # this service; LiteLLM rewrites the request as a native Anthropic
+  # /v1/messages call and pipes the response back. Reachable only on
+  # backnet, no external port exposed.
+  litellm:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}
+    restart: unless-stopped
+    command: ["--config=/app/config.yaml", "--port=4000"]
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    networks: [backnet]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request, sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:4000/health/liveliness\", timeout=3).status == 200 else 1)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---- optional self-hosted LLM ----
+  # Run with:  docker compose --profile llm up -d
+  # Requires the NVIDIA Container Toolkit on the host (Docker 24+ +
+  # nvidia-container-toolkit). On CPU-only hosts, leave this profile off
+  # and point LLM_BASE_URL at a remote endpoint.
+  llm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.6.4.post1}
+    profiles: ["llm"]
+    restart: unless-stopped
+    # vLLM uses POSIX shared memory; the default 64 MiB cap blocks model
+    # loading. ipc=host is the documented vLLM workaround.
+    ipc: host
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      VLLM_API_KEY: ${LLM_API_KEY:-}
+      VLLM_LOGGING_LEVEL: ${VLLM_LOGGING_LEVEL:-INFO}
+    command: >
+      --model ${LLM_MODEL:-Qwen/Qwen2.5-Coder-32B-Instruct}
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size ${VLLM_TENSOR_PARALLEL_SIZE:-1}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-32768}
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+      --dtype ${VLLM_DTYPE:-auto}
+      ${VLLM_EXTRA_ARGS:-}
+    volumes:
+      - daedalus_hf_cache:/root/.cache/huggingface
+    networks: [backnet]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${VLLM_GPU_COUNT:-all}
+              capabilities: [gpu]
+    healthcheck:
+      # /health returns 200 once the model is loaded; cold starts on a 32B
+      # model can take a few minutes, hence the very long start_period.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 600s
+
+  # ---- optional dev/observability stack ----
+  # Run with:  docker compose --profile dev --profile observability up -d
+  mailpit:
+    image: axllent/mailpit:v1.21
+    profiles: ["dev"]
+    restart: unless-stopped
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "${DAEDALUS_MAILPIT_UI_PORT:-9025}:8025"
+    networks: [backnet]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - daedalus_prometheus:/prometheus
+    networks: [backnet]
+    ports:
+      - "${DAEDALUS_PROMETHEUS_PORT:-9090}:9090"
+
+  loki:
+    image: grafana/loki:3.2.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - daedalus_loki:/loki
+    networks: [backnet]
+
+  promtail:
+    image: grafana/promtail:3.2.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    volumes:
+      - ./observability/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["-config.file=/etc/promtail/config.yml"]
+    networks: [backnet]
+    depends_on: [loki]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yml:/etc/otelcol/config.yaml:ro
+    networks: [backnet]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - daedalus_grafana:/var/lib/grafana
+      - ./observability/grafana-provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "${DAEDALUS_GRAFANA_PORT:-9300}:3000"
+    networks: [backnet]
+    depends_on: [prometheus, loki]
+
+volumes:
+  daedalus_data:
+  daedalus_redis:
+  daedalus_objects:
+  caddy_data:
+  caddy_config:
+  daedalus_prometheus:
+  daedalus_loki:
+  daedalus_grafana:
+  # Shared HuggingFace cache for the optional `llm` profile so models
+  # don't need to be re-downloaded every restart.
+  daedalus_hf_cache:
+
+networks:
+  frontnet: {}
+  backnet:  {}
+  agentnet:
+    # egress filter is enforced by host iptables / docker-network rules; see deploy/agentnet.md
+    driver: bridge
