@@ -58,6 +58,8 @@ from daedalus.hermes.leases import (
     release_lease,
     try_claim,
 )
+from daedalus.notifications import NotificationEvent, NotificationKind, notify
+from daedalus.notifications.usage_monitor import maybe_notify_usage_threshold
 from daedalus.storage.objects import get_object_store
 
 logger = structlog.get_logger()
@@ -377,8 +379,10 @@ class HermesScheduler:
                         db_run.token_input = int(completion_meta["token_input"])
                     if completion_meta.get("token_output") is not None:
                         db_run.token_output = int(completion_meta["token_output"])
+                    delta_cost_micros = 0
                     if completion_meta.get("cost_usd_micros") is not None:
                         db_run.cost_usd_micros = int(completion_meta["cost_usd_micros"])
+                        delta_cost_micros = int(completion_meta["cost_usd_micros"])
                     if db_run.started_at is not None:
                         duration = (db_run.finished_at - db_run.started_at).total_seconds()
                         RUN_DURATION_SECONDS.labels(kind=db_run.kind.value).observe(duration)
@@ -387,6 +391,19 @@ class HermesScheduler:
                     ).inc()
                     await self._postprocess_terminal_run(session, client, db_run)
                     await session.commit()
+                    await self._dispatch_lifecycle_notifications(session, db_run)
+                    if delta_cost_micros > 0:
+                        try:
+                            await maybe_notify_usage_threshold(
+                                session,
+                                project_id=db_run.project_id,
+                                run_id=db_run.id,
+                                delta_cost_micros=delta_cost_micros,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "usage_threshold_notify_failed", run_id=str(db_run.id)
+                            )
                     await client.publish_project_event(
                         db_run.project_id,
                         {
@@ -402,6 +419,60 @@ class HermesScheduler:
                 break
         except Exception:
             logger.exception("completion_update_failed", run_id=str(run.id))
+
+    # ── notifications ─────────────────────────────────────────────────────
+
+    async def _dispatch_lifecycle_notifications(self, session, run: Run) -> None:
+        """Emit the right `NotificationKind` for *run*'s terminal state.
+
+        Only ``RunKind.task`` runs trigger user-visible task notifications
+        — argus / planning / cleanup are infrastructure runs the operator
+        does not want pinging them.
+        """
+        if run.kind != RunKind.task:
+            return
+
+        kind: NotificationKind | None
+        title_verb: str
+        if run.state == RunState.completed:
+            kind, title_verb = NotificationKind.task_completed, "completed"
+        elif run.state in (RunState.failed, RunState.aborted_unsafe):
+            kind, title_verb = NotificationKind.task_failed, "failed"
+        elif run.state == RunState.cancelled:
+            return
+        else:
+            return
+
+        task = await session.get(Task, run.task_id) if run.task_id is not None else None
+        # Argus may have flipped the task into needs_fixes by the time we
+        # observe state — that's a different user signal than a raw failure.
+        if task is not None and task.status == TaskStatus.needs_fixes:
+            kind = NotificationKind.task_needs_fixes
+            title_verb = "needs fixes"
+
+        title = f"Task {title_verb}: {task.title if task else '(unknown)'}"
+        body_lines = [
+            f"Run {run.id} for task '{task.title if task else run.task_id}' "
+            f"finished with state {run.state.value}.",
+        ]
+        if run.exit_code is not None:
+            body_lines.append(f"Exit code: {run.exit_code}.")
+        try:
+            event = NotificationEvent(
+                kind=kind,
+                title=title,
+                body="\n".join(body_lines),
+                project_id=run.project_id,
+                task_id=task.id if task else None,
+                run_id=run.id,
+                metadata={
+                    "state": run.state.value,
+                    "exit_code": run.exit_code,
+                },
+            )
+            await notify(event, session)
+        except Exception:
+            logger.exception("lifecycle_notify_failed", run_id=str(run.id))
 
     # ── dispatch ──────────────────────────────────────────────────────────
 
