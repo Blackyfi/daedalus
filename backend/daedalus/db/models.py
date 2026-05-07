@@ -230,6 +230,14 @@ class Project(Base, TimestampMixin):
     argus_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Per-project ceiling on wall-clock minutes; NULL → use the connector's value.
     wall_clock_minutes_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Auto-run quiet hours (hour-of-day, 0-23 in server local time). When both
+    # start and end are non-null, the scheduler skips automatic re-queue inside
+    # [start, end). Wrap-around (e.g. 22→6) is supported. NULL on either side
+    # disables the gate.
+    auto_run_quiet_hours_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    auto_run_quiet_hours_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Maximum auto-runs per UTC day. 0 = unlimited (legacy behaviour).
+    auto_run_daily_cap: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     owner: Mapped[User] = relationship(back_populates="projects")
     tasks: Mapped[list[Task]] = relationship(back_populates="project", cascade="all, delete-orphan")

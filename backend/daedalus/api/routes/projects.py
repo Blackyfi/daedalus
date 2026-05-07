@@ -170,6 +170,9 @@ async def create_project(
         verifier_model=body.verifier_model,
         argus_enabled=body.argus_enabled,
         wall_clock_minutes_override=body.wall_clock_minutes_override,
+        auto_run_quiet_hours_start=body.auto_run_quiet_hours_start,
+        auto_run_quiet_hours_end=body.auto_run_quiet_hours_end,
+        auto_run_daily_cap=body.auto_run_daily_cap,
     )
     db.add(proj)
     await db.flush()

@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from daedalus.api.routes import (
     audit,
     auth,
+    autorun,
     connectors,
     diagnostics,
     discovery,
@@ -92,6 +93,7 @@ app.include_router(notes.router,      prefix=PREFIX,                tags=["notes
 app.include_router(connectors.router, prefix=f"{PREFIX}/connectors", tags=["connectors"])
 app.include_router(plans.router,      prefix=PREFIX,                tags=["plans"])
 app.include_router(runs.router,       prefix=f"{PREFIX}/runs",      tags=["runs"])
+app.include_router(autorun.router,    prefix=f"{PREFIX}/autorun",   tags=["autorun"])
 app.include_router(audit.router,      prefix=f"{PREFIX}/audit",     tags=["audit"])
 app.include_router(discovery.router,  prefix=f"{PREFIX}/discover",  tags=["discovery"])
 app.include_router(system.router,     prefix=f"{PREFIX}/system",    tags=["system"])
