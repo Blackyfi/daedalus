@@ -116,6 +116,44 @@ class User(Base, TimestampMixin):
     webauthn_credentials: Mapped[list[WebAuthnCredential]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    notification_pref: Mapped[UserNotificationPref | None] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+
+
+# --- notification preferences -------------------------------------------
+
+class UserNotificationPref(Base, TimestampMixin):
+    """Per-user channel toggles for each `NotificationKind`.
+
+    A missing row is treated as all-on with no usage cap (see
+    `daedalus.notifications.dispatcher._default_pref`). The mirrored
+    `<channel>_<kind>` columns let the dispatcher resolve a single
+    `getattr` per (kind, channel) instead of joining a child table.
+    """
+
+    __tablename__ = "user_notification_prefs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+
+    email_task_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_task_failed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_task_needs_fixes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    email_usage_threshold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    in_app_task_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    in_app_task_failed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    in_app_task_needs_fixes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    in_app_usage_threshold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Project cumulative `cost_usd_micros` ceiling that triggers a single
+    # `usage_threshold` notification per crossing. NULL disables the gate.
+    usage_threshold_micros: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="notification_pref")
 
 
 # --- webauthn ------------------------------------------------------------
