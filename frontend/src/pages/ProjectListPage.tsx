@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Connector,
@@ -6,12 +6,38 @@ import {
   Project,
   ProjectStatsMap,
   RunnerSnapshot,
+  SystemConfig,
   api,
   apiJson,
 } from "../api";
 import { useApp } from "../store";
 import DiscoverModal from "../components/DiscoverModal";
 import ProjectCard from "../components/ProjectCard";
+
+// Slugify a project name into a filesystem-safe directory leaf:
+// lowercase, ASCII alnum + `_.-`, collapse runs of dashes, trim leading/trailing.
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "");
+}
+
+function joinPath(root: string, leaf: string): string {
+  if (!root) return leaf;
+  if (!leaf) return root;
+  return `${root.replace(/\/+$/, "")}/${leaf}`;
+}
+
+const EMPTY_FORM = {
+  name: "",
+  description: "",
+  workspace_path: "",
+  default_connector_id: "",
+  init_git_repo: false,
+};
 
 export default function ProjectListPage() {
   const flash = useApp((s) => s.flash);
@@ -39,17 +65,37 @@ export default function ProjectListPage() {
     queryFn: () => api("/api/v1/projects/git-status"),
     refetchInterval: 30_000,
   });
+  const systemConfig = useQuery<SystemConfig>({
+    queryKey: ["system-config"],
+    queryFn: () => api("/api/v1/system/config"),
+    staleTime: Infinity,
+  });
+  const workspacesRoot = systemConfig.data?.workspaces_root ?? "";
+
   const activeByProject = new Map(
     (runners.data?.active ?? []).map((a) => [a.project_id, a]),
   );
 
-  const [form, setForm] = useState({
-    name: "",
-    description: "",
-    workspace_path: "",
-    default_connector_id: "",
-  });
+  const [form, setForm] = useState(EMPTY_FORM);
+  // True once the user has hand-edited the workspace path — locks the
+  // auto-suggest so we don't overwrite a deliberate choice.
+  const [pathTouched, setPathTouched] = useState(false);
   const [discoverOpen, setDiscoverOpen] = useState(false);
+
+  // Auto-suggest `<workspaces_root>/<slug>` as the name changes, unless the
+  // user has typed into the path field directly. Also runs once the config
+  // query resolves so an empty path gets populated as soon as the root is known.
+  useEffect(() => {
+    if (pathTouched) return;
+    if (!workspacesRoot) return;
+    const slug = slugify(form.name);
+    const suggested = slug ? joinPath(workspacesRoot, slug) : "";
+    setForm((prev) =>
+      prev.workspace_path === suggested
+        ? prev
+        : { ...prev, workspace_path: suggested },
+    );
+  }, [form.name, workspacesRoot, pathTouched]);
 
   const create = useMutation({
     mutationFn: (body: typeof form) =>
@@ -59,7 +105,8 @@ export default function ProjectListPage() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
-      setForm({ name: "", description: "", workspace_path: "", default_connector_id: "" });
+      setForm(EMPTY_FORM);
+      setPathTouched(false);
       flash("Project created", "success");
     },
     onError: (err: any) => flash(err.message || "Project create failed", "error"),
@@ -71,8 +118,8 @@ export default function ProjectListPage() {
   }
 
   return (
-    <div className="grid grid-cols-3 gap-6">
-      <section className="col-span-2 panel">
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-6">
+      <section className="panel lg:col-span-2">
         <header className="mb-3 flex items-center justify-between">
           <h2 className="text-sm uppercase tracking-wide text-muted">Projects</h2>
           <div className="flex items-center gap-3 text-xs text-muted">
@@ -103,8 +150,9 @@ export default function ProjectListPage() {
         <h2 className="mb-3 text-sm uppercase tracking-wide text-muted">New project</h2>
         <form onSubmit={submit} className="space-y-3">
           <div>
-            <label className="label">Name</label>
+            <label className="label" htmlFor="np-name">Name</label>
             <input
+              id="np-name"
               className="field"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -112,8 +160,9 @@ export default function ProjectListPage() {
             />
           </div>
           <div>
-            <label className="label">Description</label>
+            <label className="label" htmlFor="np-description">Description</label>
             <textarea
+              id="np-description"
               className="field"
               rows={2}
               value={form.description}
@@ -121,18 +170,56 @@ export default function ProjectListPage() {
             />
           </div>
           <div>
-            <label className="label">Workspace path</label>
+            <label className="label" htmlFor="np-workspace">Workspace path</label>
             <input
+              id="np-workspace"
               className="field"
               value={form.workspace_path}
-              onChange={(e) => setForm({ ...form, workspace_path: e.target.value })}
-              placeholder="/workspaces/my-repo"
+              onChange={(e) => {
+                setPathTouched(true);
+                setForm({ ...form, workspace_path: e.target.value });
+              }}
+              placeholder={
+                workspacesRoot ? `${workspacesRoot}/my-repo` : "/workspaces/my-repo"
+              }
               required
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
             />
+            <p className="mt-1 text-xs text-muted">
+              Resolved:{" "}
+              <span className="font-mono break-all text-text">
+                {form.workspace_path || (workspacesRoot ? `${workspacesRoot}/…` : "—")}
+              </span>
+              {!pathTouched && workspacesRoot && (
+                <span className="ml-1 italic">(auto from name)</span>
+              )}
+            </p>
           </div>
           <div>
-            <label className="label">Default connector</label>
+            <label className="flex items-start gap-2 text-sm min-h-[44px] md:min-h-0">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={form.init_git_repo}
+                onChange={(e) =>
+                  setForm({ ...form, init_git_repo: e.target.checked })
+                }
+              />
+              <span>
+                Initialize empty git repository
+                <span className="block text-xs text-muted">
+                  Runs <code>git init</code> in the workspace path if it doesn't
+                  already contain a repo.
+                </span>
+              </span>
+            </label>
+          </div>
+          <div>
+            <label className="label" htmlFor="np-connector">Default connector</label>
             <select
+              id="np-connector"
               className="field"
               value={form.default_connector_id}
               onChange={(e) => setForm({ ...form, default_connector_id: e.target.value })}
