@@ -22,6 +22,7 @@ from daedalus.api.routes import (
     ideas,
     internal,
     notes,
+    notification_prefs,
     plans,
     projects,
     runs,
@@ -96,6 +97,7 @@ app.include_router(audit.router,      prefix=f"{PREFIX}/audit",     tags=["audit
 app.include_router(discovery.router,  prefix=f"{PREFIX}/discover",  tags=["discovery"])
 app.include_router(system.router,     prefix=f"{PREFIX}/system",    tags=["system"])
 app.include_router(diagnostics.router, prefix=f"{PREFIX}/diagnostics", tags=["diagnostics"])
+app.include_router(notification_prefs.router, prefix=f"{PREFIX}/account", tags=["account"])
 app.include_router(internal.router,   prefix="/api/internal",       tags=["internal"])
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"

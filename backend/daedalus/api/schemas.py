@@ -319,6 +319,49 @@ class DiscoverRegisterIn(BaseModel):
     repos: list[DiscoverRepoEntry] = Field(min_length=1)
 
 
+# --- notification preferences ---
+
+class NotificationPrefsOut(_Base):
+    """Mirrors `UserNotificationPref` with friendly defaults applied.
+
+    Returned even when the user has no row in `user_notification_prefs`
+    yet — in that case the dispatcher's "all on" defaults are reflected
+    so the SPA can render a coherent toggle state.
+    """
+
+    email_task_completed: bool
+    email_task_failed: bool
+    email_task_needs_fixes: bool
+    email_usage_threshold: bool
+    in_app_task_completed: bool
+    in_app_task_failed: bool
+    in_app_task_needs_fixes: bool
+    in_app_usage_threshold: bool
+    usage_threshold_micros: int | None
+
+
+class NotificationPrefsPatch(BaseModel):
+    """Partial update: only fields explicitly set are applied.
+
+    `usage_threshold_micros` is a project cumulative ceiling expressed in
+    micro-USD (1 USD = 1_000_000). Pass `null` to remove the gate.
+    """
+
+    email_task_completed: bool | None = None
+    email_task_failed: bool | None = None
+    email_task_needs_fixes: bool | None = None
+    email_usage_threshold: bool | None = None
+    in_app_task_completed: bool | None = None
+    in_app_task_failed: bool | None = None
+    in_app_task_needs_fixes: bool | None = None
+    in_app_usage_threshold: bool | None = None
+    usage_threshold_micros: int | None = Field(
+        default=None, ge=0, le=10_000_000_000
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # --- audit ---
 
 class AuditOut(_Base):

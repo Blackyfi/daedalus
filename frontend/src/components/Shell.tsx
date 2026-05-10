@@ -44,6 +44,9 @@ export default function Shell() {
             <NavLink to="/algorithms" className={navClass}>
               Algorithms
             </NavLink>
+            <NavLink to="/account" className={navClass}>
+              Account
+            </NavLink>
           </nav>
           <div className="flex-1" />
           <RunnerBar />
