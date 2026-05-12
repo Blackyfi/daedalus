@@ -12,6 +12,7 @@ import {
 import { useApp } from "../store";
 import DiscoverModal from "../components/DiscoverModal";
 import ProjectCard from "../components/ProjectCard";
+import ProjectIdeaBox from "../components/ProjectIdeaBox";
 
 export default function ProjectListPage() {
   const flash = useApp((s) => s.flash);
@@ -99,7 +100,8 @@ export default function ProjectListPage() {
         </div>
       </section>
 
-      <section className="panel">
+      <aside className="col-span-1 space-y-6">
+        <section className="panel">
         <h2 className="mb-3 text-sm uppercase tracking-wide text-muted">New project</h2>
         <form onSubmit={submit} className="space-y-3">
           <div>
@@ -149,7 +151,10 @@ export default function ProjectListPage() {
             {create.isPending ? "Creating…" : "Create"}
           </button>
         </form>
-      </section>
+        </section>
+
+        <ProjectIdeaBox connectors={connectors.data ?? []} />
+      </aside>
 
       <DiscoverModal
         open={discoverOpen}

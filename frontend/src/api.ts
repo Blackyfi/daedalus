@@ -109,6 +109,37 @@ export interface Idea {
 export const updateIdea = (id: string, text: string): Promise<Idea> =>
   apiJson<Idea>(`/api/v1/ideas/${id}`, { text }, { method: "PATCH" });
 
+// Project-idea — sits on the Projects page, *above* the per-project ideas.
+// `new` becomes `promoted` when the user converts it into a real project.
+export type ProjectIdeaStatus = "new" | "promoted" | "archived";
+
+export interface ProjectIdea {
+  id: string;
+  owner_id: string;
+  text: string;
+  tags: string[];
+  status: ProjectIdeaStatus;
+  promoted_project_id: string | null;
+  sort_index: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export const updateProjectIdea = (
+  id: string,
+  patch: { text?: string; tags?: string[]; status?: ProjectIdeaStatus },
+): Promise<ProjectIdea> =>
+  apiJson<ProjectIdea>(`/api/v1/project-ideas/${id}`, patch, { method: "PATCH" });
+
+export interface ProjectIdeaPromoteIn {
+  name: string;
+  description?: string | null;
+  workspace_path: string;
+  git_default_branch?: string;
+  default_connector_id?: string | null;
+  init_git?: boolean;
+}
+
 export interface Note {
   id: string;
   project_id: string;

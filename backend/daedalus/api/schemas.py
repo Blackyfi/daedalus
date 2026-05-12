@@ -11,6 +11,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, field
 from daedalus.db.models import (
     PlanProposalStatus,
     PriorityLane,
+    ProjectIdeaStatus,
     Role,
     RunKind,
     RunState,
@@ -163,6 +164,58 @@ class IdeaOut(_Base):
     sort_index: int
     created_at: datetime
     updated_at: datetime
+
+
+# --- project idea (Projects-page idea box) ---
+
+
+class ProjectIdeaIn(BaseModel):
+    text: str = Field(min_length=1)
+    tags: list[str] = []
+
+
+class ProjectIdeaPatch(BaseModel):
+    """Inline-edit / archive surface. Promotion has its own endpoint."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    text: str | None = Field(
+        default=None,
+        min_length=1,
+        validation_alias=AliasChoices("text", "body"),
+    )
+    tags: list[str] | None = None
+    sort_index: int | None = None
+    # Allow flipping between `new` and `archived`; `promoted` is owned
+    # by the dedicated promote endpoint and is rejected here.
+    status: ProjectIdeaStatus | None = None
+
+
+class ProjectIdeaOut(_Base):
+    id: uuid.UUID
+    owner_id: uuid.UUID
+    text: str
+    tags: list[str]
+    status: ProjectIdeaStatus
+    promoted_project_id: uuid.UUID | None
+    sort_index: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectIdeaPromote(BaseModel):
+    """Payload accepted by `POST /project-ideas/{id}/promote`.
+
+    Mirrors the new-project form so the SPA can pre-fill the modal
+    from the idea row before promotion.
+    """
+
+    name: str = Field(min_length=1, max_length=160)
+    description: str | None = None
+    workspace_path: str = Field(min_length=1)
+    git_default_branch: str = "main"
+    default_connector_id: str | None = None
+    init_git: bool = False
 
 
 # --- note ---
