@@ -9,6 +9,7 @@ import ConnectorsPage from "./pages/ConnectorsPage";
 import AuditPage from "./pages/AuditPage";
 import SecurityPage from "./pages/SecurityPage";
 import AlgorithmsPage from "./pages/AlgorithmsPage";
+import AccountPage from "./pages/AccountPage";
 import Shell from "./components/Shell";
 
 function PrivateOutlet({ children }: { children: React.ReactNode }) {
@@ -74,6 +75,7 @@ export default function App() {
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/security" element={<SecurityPage />} />
           <Route path="/algorithms" element={<AlgorithmsPage />} />
+          <Route path="/account" element={<AccountPage />} />
         </Route>
       </Routes>
     </div>
