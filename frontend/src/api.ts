@@ -255,6 +255,11 @@ export interface AuditEvent {
   payload: Record<string, any>;
 }
 
+// Static config surfaced to the SPA (workspaces root for path auto-suggest, etc).
+export interface SystemConfig {
+  workspaces_root: string;
+}
+
 // Pythia subscription snapshot (cached, refreshed by Talos every PYTHIA_REFRESH_SECONDS).
 export interface SubscriptionInfo {
   kind:
