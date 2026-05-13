@@ -89,6 +89,19 @@ class PlanProposalStatus(str, enum.Enum):
     discarded = "discarded"
 
 
+class ProjectIdeaStatus(str, enum.Enum):
+    """Lifecycle for a *project* idea (one tier above a task idea).
+
+    `new` is the default; `promoted` is set once the idea has been
+    converted into a real `Project` row; `archived` is a manual
+    "set aside" without promoting.
+    """
+
+    new = "new"
+    promoted = "promoted"
+    archived = "archived"
+
+
 # --- users ---------------------------------------------------------------
 
 class User(Base, TimestampMixin):
@@ -294,6 +307,34 @@ class Note(Base, TimestampMixin):
     body: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
     project: Mapped[Project] = relationship(back_populates="notes")
+
+
+class ProjectIdea(Base, TimestampMixin):
+    """A "future project" idea — distinct from `Idea`, which is per-project.
+
+    Lives on the Projects landing page. Promotion creates a real
+    `Project` row and links it via `promoted_project_id`, flipping
+    `status` to `promoted`.
+    """
+
+    __tablename__ = "project_ideas"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, nullable=False)
+    status: Mapped[ProjectIdeaStatus] = mapped_column(
+        Enum(ProjectIdeaStatus, name="project_idea_status"),
+        default=ProjectIdeaStatus.new,
+        nullable=False,
+        index=True,
+    )
+    promoted_project_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    sort_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 # --- runs / argus reports ------------------------------------------------

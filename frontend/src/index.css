@@ -116,3 +116,7 @@ body {
 .status-done,
 .status-completed { @apply bg-accent/10 text-accent; }
 .status-cancelled { @apply bg-panel2 text-muted; }
+/* Project-idea statuses (Projects-page ProjectIdeaBox). */
+.status-new { @apply bg-warning/10 text-warning; }
+.status-promoted { @apply bg-accent/10 text-accent; }
+.status-archived { @apply bg-panel2 text-muted; }
