@@ -31,6 +31,7 @@ from daedalus.db.models import (
     User,
 )
 from daedalus.merge import (
+    MergeBatchClaimConflict,
     execute_batch,
     plan_batch,
     reconcile_resolution_states,
@@ -276,18 +277,36 @@ async def merge_batch_create(
     )
     verify_commands = await _verify_commands_for(db, project)
     settings = get_settings()
-    batch_result = await execute_batch(
-        db=db,
-        project_id=project.id,
-        workspace_path=project.workspace_path,
-        default_branch=project.git_default_branch,
-        plans=plans,
-        verify_commands=verify_commands,
-        require_argus_pass=body.require_argus_pass,
-        created_by_user_id=user.id,
-        agent_uid=settings.agent_uid,
-        agent_gid=settings.agent_gid,
-    )
+    try:
+        batch_result = await execute_batch(
+            db=db,
+            project_id=project.id,
+            workspace_path=project.workspace_path,
+            default_branch=project.git_default_branch,
+            plans=plans,
+            verify_commands=verify_commands,
+            require_argus_pass=body.require_argus_pass,
+            created_by_user_id=user.id,
+            agent_uid=settings.agent_uid,
+            agent_gid=settings.agent_gid,
+        )
+    except MergeBatchClaimConflict as exc:
+        # Some candidate tasks are still claimed by an open batch. Refuse
+        # to clone them into a second batch — that's how 9faf89e0 / 426f21d5
+        # got created over the same task set as 71d3732c on 2026-05-13.
+        # 409 Conflict tells the UI to point the operator at the existing
+        # batch rather than offer a "create" button.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "error": "merge_batch_claim_conflict",
+                "message": str(exc),
+                "conflicts": [
+                    {"task_id": str(tid), "batch_id": str(bid)}
+                    for tid, bid in exc.conflicts.items()
+                ],
+            },
+        ) from exc
 
     await audit_record(
         db,
