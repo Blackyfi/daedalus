@@ -1,5 +1,10 @@
 """Batch-merge of completed task branches onto an integration branch."""
-from daedalus.merge.executor import BatchResult, execute_batch
+from daedalus.merge.executor import (
+    BatchResult,
+    MergeBatchClaimConflict,
+    execute_batch,
+    find_claim_conflicts,
+)
 from daedalus.merge.planner import BranchCandidate, BranchPlan, plan_batch, select_candidates
 from daedalus.merge.resolution import (
     ResolutionStep,
@@ -12,9 +17,11 @@ __all__ = [
     "BatchResult",
     "BranchCandidate",
     "BranchPlan",
+    "MergeBatchClaimConflict",
     "ResolutionStep",
     "ShipResult",
     "execute_batch",
+    "find_claim_conflicts",
     "plan_batch",
     "reconcile_resolution_states",
     "resolve_next_conflict",

@@ -102,6 +102,52 @@ class ProjectIdeaStatus(str, enum.Enum):
     archived = "archived"
 
 
+class MergeBatchState(str, enum.Enum):
+    pending = "pending"
+    merging_clean = "merging_clean"
+    awaiting_review = "awaiting_review"
+    resolving = "resolving"
+    shipping = "shipping"
+    shipped = "shipped"
+    failed = "failed"
+    aborted = "aborted"
+
+
+# Subset of MergeBatchState that means "this batch still owns its tasks".
+# A task in any of these states is considered claimed; creating a new batch
+# over the same task must be rejected (or short-circuit to the existing
+# batch). Terminal states (shipped/failed/aborted) release the claim.
+OPEN_MERGE_BATCH_STATES: tuple[MergeBatchState, ...] = (
+    MergeBatchState.pending,
+    MergeBatchState.merging_clean,
+    MergeBatchState.awaiting_review,
+    MergeBatchState.resolving,
+    MergeBatchState.shipping,
+)
+
+
+class MergeItemState(str, enum.Enum):
+    pending = "pending"
+    merged = "merged"
+    skipped_empty = "skipped_empty"
+    skipped_already_merged = "skipped_already_merged"
+    skipped_missing = "skipped_missing"
+    skipped_conflict = "skipped_conflict"
+    resolution_queued = "resolution_queued"
+    resolution_running = "resolution_running"
+    resolved = "resolved"
+    resolution_failed = "resolution_failed"
+
+
+class MergeItemCategory(str, enum.Enum):
+    clean = "clean"
+    conflict = "conflict"
+    empty = "empty"
+    already_merged = "already_merged"
+    missing_branch = "missing_branch"
+    missing_run = "missing_run"
+
+
 # --- users ---------------------------------------------------------------
 
 class User(Base, TimestampMixin):
@@ -430,6 +476,66 @@ class PlanProposal(Base, TimestampMixin):
         ARRAY(UUID(as_uuid=True)), default=list, nullable=False
     )
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# --- merge batches ------------------------------------------------------
+
+class MergeBatch(Base, TimestampMixin):
+    __tablename__ = "merge_batches"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    integration_branch: Mapped[str] = mapped_column(Text, nullable=False)
+    integration_worktree: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[MergeBatchState] = mapped_column(
+        Enum(MergeBatchState, name="merge_batch_state"),
+        nullable=False,
+        default=MergeBatchState.pending,
+    )
+    verify_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verify_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    require_argus_pass: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MergeBatchItem(Base, TimestampMixin):
+    __tablename__ = "merge_batch_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("merge_batches.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    source_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
+    )
+    resolution_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    resolution_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
+    )
+    branch: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[MergeItemCategory] = mapped_column(
+        Enum(MergeItemCategory, name="merge_item_category"), nullable=False
+    )
+    state: Mapped[MergeItemState] = mapped_column(
+        Enum(MergeItemState, name="merge_item_state"),
+        nullable=False,
+        default=MergeItemState.pending,
+    )
+    conflicting_files: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    commits_ahead: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    files_changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # --- snapshots (pre-yolo workspace tarballs / git tags) -----------------

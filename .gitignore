@@ -44,3 +44,12 @@ frontend/dist/
 
 # Logs
 *.log
+
+# Daedalus: auto-appended compiled-artefact patterns
+.mypy_cache/
+.nuxt/
+target/
+.gradle/
+*.class
+*.o
+*.dylib
