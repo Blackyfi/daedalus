@@ -316,6 +316,25 @@ export interface ProjectStats {
 
 export type ProjectStatsMap = Record<string, ProjectStats>;
 
+// Per-user notification preferences. Mirrors `UserNotificationPref` —
+// when the user has no row yet the server fills the defaults so the UI
+// can hydrate with the same shape every time.
+export interface NotificationPrefs {
+  email_task_completed: boolean;
+  email_task_failed: boolean;
+  email_task_needs_fixes: boolean;
+  email_usage_threshold: boolean;
+  in_app_task_completed: boolean;
+  in_app_task_failed: boolean;
+  in_app_task_needs_fixes: boolean;
+  in_app_usage_threshold: boolean;
+  // Project cumulative spend ceiling in micro-USD (1 USD = 1_000_000).
+  // `null` disables the gate.
+  usage_threshold_micros: number | null;
+}
+
+export type NotificationPrefsPatch = Partial<NotificationPrefs>;
+
 // Git working-tree status — drives the "git pull required" banner.
 export interface GitStatusInfo {
   is_git_repo: boolean;
