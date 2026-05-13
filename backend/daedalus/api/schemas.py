@@ -54,6 +54,16 @@ class ProjectIn(BaseModel):
     auto_run_quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
     auto_run_quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
     auto_run_daily_cap: int = Field(default=0, ge=0, le=500)
+    auto_run_concurrency_cap: int = Field(default=1, ge=0, le=64)
+    auto_run_hourly_cap: int = Field(default=0, ge=0, le=500)
+    auto_run_allowed_connectors: list[str] = Field(default_factory=list)
+    auto_run_eligible_statuses: list[TaskStatus] = Field(
+        default_factory=lambda: [
+            TaskStatus.backlog,
+            TaskStatus.ready,
+            TaskStatus.needs_fixes,
+        ]
+    )
 
 
 class ProjectPatch(BaseModel):
@@ -72,6 +82,10 @@ class ProjectPatch(BaseModel):
     auto_run_quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
     auto_run_quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
     auto_run_daily_cap: int | None = Field(default=None, ge=0, le=500)
+    auto_run_concurrency_cap: int | None = Field(default=None, ge=0, le=64)
+    auto_run_hourly_cap: int | None = Field(default=None, ge=0, le=500)
+    auto_run_allowed_connectors: list[str] | None = None
+    auto_run_eligible_statuses: list[TaskStatus] | None = None
 
 
 class ProjectOut(_Base):
@@ -93,6 +107,10 @@ class ProjectOut(_Base):
     auto_run_quiet_hours_start: int | None
     auto_run_quiet_hours_end: int | None
     auto_run_daily_cap: int
+    auto_run_concurrency_cap: int
+    auto_run_hourly_cap: int
+    auto_run_allowed_connectors: list[str]
+    auto_run_eligible_statuses: list[str]
     created_at: datetime
     updated_at: datetime
 
@@ -111,6 +129,10 @@ class AutoRunConfigPatch(BaseModel):
     auto_run_quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
     auto_run_quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
     auto_run_daily_cap: int | None = Field(default=None, ge=0, le=500)
+    auto_run_concurrency_cap: int | None = Field(default=None, ge=0, le=64)
+    auto_run_hourly_cap: int | None = Field(default=None, ge=0, le=500)
+    auto_run_allowed_connectors: list[str] | None = None
+    auto_run_eligible_statuses: list[TaskStatus] | None = None
 
 
 class AutoRunRecentRun(_Base):
@@ -134,11 +156,59 @@ class AutoRunStatusOut(BaseModel):
     auto_run_quiet_hours_start: int | None
     auto_run_quiet_hours_end: int | None
     auto_run_daily_cap: int
+    auto_run_concurrency_cap: int
+    auto_run_hourly_cap: int
+    auto_run_allowed_connectors: list[str]
+    auto_run_eligible_statuses: list[str]
+    # Effective list the scheduler will actually consider — same as
+    # auto_run_eligible_statuses but echoed under the legacy key so older
+    # clients keep working.
     eligible_task_statuses: list[str]
     in_quiet_hours: bool
     runs_today: int
+    runs_last_hour: int
+    active_auto_runs: int
     daily_cap_remaining: int | None
+    hourly_cap_remaining: int | None
+    concurrency_remaining: int | None
     recent_runs: list[AutoRunRecentRun]
+
+
+# --- auto-run defaults (global / org-wide) ---
+
+class AutoRunDefaultsOut(_Base):
+    """Org-wide default auto-run policy surfaced on Account/admin."""
+
+    enabled: bool
+    max_fix_loops: int
+    daily_cap: int
+    hourly_cap: int
+    concurrency_cap: int
+    quiet_hours_start: int | None
+    quiet_hours_end: int | None
+    eligible_statuses: list[str]
+    allowed_connectors: list[str]
+    updated_at: datetime
+
+
+class AutoRunDefaultsPatch(BaseModel):
+    """Partial update to the global auto-run defaults singleton.
+
+    Owner-only. All fields optional. Cross-field validation (quiet-hours
+    pair, etc.) is performed by the route handler.
+    """
+
+    enabled: bool | None = None
+    max_fix_loops: int | None = Field(default=None, ge=0, le=20)
+    daily_cap: int | None = Field(default=None, ge=0, le=500)
+    hourly_cap: int | None = Field(default=None, ge=0, le=500)
+    concurrency_cap: int | None = Field(default=None, ge=0, le=64)
+    quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
+    quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
+    eligible_statuses: list[TaskStatus] | None = None
+    allowed_connectors: list[str] | None = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # --- task ---
