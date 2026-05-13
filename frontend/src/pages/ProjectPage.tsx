@@ -19,6 +19,7 @@ import RunPanel from "../components/RunPanel";
 import IdeaBox from "../components/IdeaBox";
 import PlanReview from "../components/PlanReview";
 import ProjectSettings from "../components/ProjectSettings";
+import AutoRunPanel from "../components/AutoRunPanel";
 import GitPullBanner from "../components/GitPullBanner";
 
 export default function ProjectPage() {
@@ -239,6 +240,7 @@ export default function ProjectPage() {
 
       <aside className="col-span-4 space-y-6">
         <IdeaBox ideas={ideas.data ?? []} projectId={projectId!} />
+        <AutoRunPanel project={project.data} connectors={connectors.data ?? []} />
         <ProjectSettings project={project.data} connectors={connectors.data ?? []} />
       </aside>
     </div>
