@@ -61,9 +61,22 @@ export interface Project {
   auto_run_quiet_hours_start: number | null;
   auto_run_quiet_hours_end: number | null;
   auto_run_daily_cap: number;
+  auto_run_concurrency_cap: number;
+  auto_run_hourly_cap: number;
+  auto_run_allowed_connectors: string[];
+  auto_run_eligible_statuses: TaskStatusValue[];
   created_at: string;
   updated_at: string;
 }
+
+export type TaskStatusValue =
+  | "backlog"
+  | "ready"
+  | "in_progress"
+  | "verifying"
+  | "needs_fixes"
+  | "done"
+  | "cancelled";
 
 // Auto-run config + derived state for the AutoRunPanel.
 export interface AutoRunRecentRun {
@@ -87,10 +100,20 @@ export interface AutoRunStatus {
   auto_run_quiet_hours_start: number | null;
   auto_run_quiet_hours_end: number | null;
   auto_run_daily_cap: number;
-  eligible_task_statuses: Task["status"][];
+  auto_run_concurrency_cap: number;
+  auto_run_hourly_cap: number;
+  auto_run_allowed_connectors: string[];
+  auto_run_eligible_statuses: TaskStatusValue[];
+  // Legacy alias for auto_run_eligible_statuses — preserved for older
+  // clients that look up the readonly list under this name.
+  eligible_task_statuses: TaskStatusValue[];
   in_quiet_hours: boolean;
   runs_today: number;
+  runs_last_hour: number;
+  active_auto_runs: number;
   daily_cap_remaining: number | null;
+  hourly_cap_remaining: number | null;
+  concurrency_remaining: number | null;
   recent_runs: AutoRunRecentRun[];
 }
 
@@ -102,7 +125,27 @@ export interface AutoRunConfigPatch {
   auto_run_quiet_hours_start?: number | null;
   auto_run_quiet_hours_end?: number | null;
   auto_run_daily_cap?: number;
+  auto_run_concurrency_cap?: number;
+  auto_run_hourly_cap?: number;
+  auto_run_allowed_connectors?: string[];
+  auto_run_eligible_statuses?: TaskStatusValue[];
 }
+
+// Org-wide auto-run defaults surfaced on the Account/admin page.
+export interface AutoRunDefaults {
+  enabled: boolean;
+  max_fix_loops: number;
+  daily_cap: number;
+  hourly_cap: number;
+  concurrency_cap: number;
+  quiet_hours_start: number | null;
+  quiet_hours_end: number | null;
+  eligible_statuses: TaskStatusValue[];
+  allowed_connectors: string[];
+  updated_at: string;
+}
+
+export type AutoRunDefaultsPatch = Partial<Omit<AutoRunDefaults, "updated_at">>;
 
 // Anthropic models surfaced in the project settings dropdowns. Keep in sync
 // with what's actually available to the operator's `claude` CLI / LiteLLM.

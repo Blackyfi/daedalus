@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, apiJson, NotificationPrefs, NotificationPrefsPatch } from "../api";
+import AutoRunDefaultsPanel from "../components/AutoRunDefaultsPanel";
 import { useApp } from "../store";
 
 // The four notification kinds the dispatcher knows about. The labels are
@@ -140,6 +141,8 @@ export default function AccountPage() {
           that triggers a usage notification.
         </p>
       </section>
+
+      <AutoRunDefaultsPanel />
 
       <section className="panel space-y-4">
         <header className="flex items-center justify-between">
