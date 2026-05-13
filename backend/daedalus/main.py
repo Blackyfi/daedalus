@@ -23,6 +23,7 @@ from daedalus.api.routes import (
     internal,
     notes,
     plans,
+    project_ideas,
     projects,
     runs,
     system,
@@ -88,6 +89,7 @@ if webauthn is not None:
 app.include_router(projects.router,   prefix=f"{PREFIX}/projects",  tags=["projects"])
 app.include_router(tasks.router,      prefix=PREFIX,                tags=["tasks"])
 app.include_router(ideas.router,      prefix=PREFIX,                tags=["ideas"])
+app.include_router(project_ideas.router, prefix=PREFIX,             tags=["project-ideas"])
 app.include_router(notes.router,      prefix=PREFIX,                tags=["notes"])
 app.include_router(connectors.router, prefix=f"{PREFIX}/connectors", tags=["connectors"])
 app.include_router(plans.router,      prefix=PREFIX,                tags=["plans"])
