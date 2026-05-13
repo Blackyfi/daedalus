@@ -297,6 +297,24 @@ class Project(Base, TimestampMixin):
     auto_run_quiet_hours_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Maximum auto-runs per UTC day. 0 = unlimited (legacy behaviour).
     auto_run_daily_cap: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Max simultaneous auto-launched runs for this project. 0 = unlimited.
+    auto_run_concurrency_cap: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Max auto-launched runs in a rolling 1-hour window. 0 = unlimited.
+    auto_run_hourly_cap: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Connector IDs the auto-runner is allowed to use. Empty list = all enabled
+    # connectors are allowed (legacy behaviour). When non-empty the scheduler
+    # restricts auto-runs to tasks whose effective connector is in this list.
+    auto_run_allowed_connectors: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default="{}", nullable=False
+    )
+    # Task statuses the auto-runner is allowed to pick up. Subset of
+    # TaskStatus values. Default matches the legacy hard-coded scheduler list.
+    auto_run_eligible_statuses: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        default=lambda: ["backlog", "ready", "needs_fixes"],
+        server_default="{backlog,ready,needs_fixes}",
+        nullable=False,
+    )
 
     owner: Mapped[User] = relationship(back_populates="projects")
     tasks: Mapped[list[Task]] = relationship(back_populates="project", cascade="all, delete-orphan")
@@ -565,6 +583,39 @@ class Connector(Base, TimestampMixin):
     spec: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+# --- auto-run defaults (global / org-wide) -------------------------------
+
+class AutoRunDefaults(Base, TimestampMixin):
+    """Org-wide default auto-run policy.
+
+    Modelled as a singleton row keyed by ``id=1`` so the operator UI can
+    `GET`/`PATCH` it without picking an instance. Per-project rows on the
+    `projects` table override these values; this row is the fallback the
+    Account/admin page surfaces, and the suggested starting point for new
+    projects.
+    """
+
+    __tablename__ = "auto_run_defaults"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    max_fix_loops: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    daily_cap: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    hourly_cap: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    concurrency_cap: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    quiet_hours_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quiet_hours_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    eligible_statuses: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        default=lambda: ["backlog", "ready", "needs_fixes"],
+        server_default="{backlog,ready,needs_fixes}",
+        nullable=False,
+    )
+    allowed_connectors: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default="{}", nullable=False
+    )
 
 
 # --- audit log -----------------------------------------------------------
