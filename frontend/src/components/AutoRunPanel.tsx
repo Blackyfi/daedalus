@@ -6,6 +6,7 @@ import {
   Connector,
   Project,
   SubscriptionInfo,
+  TaskStatusValue,
   api,
   apiJson,
 } from "../api";
@@ -22,24 +23,23 @@ interface FormState {
   wall_clock_minutes_override: string;
   default_connector_id: string;
   daily_cap: number;
+  hourly_cap: number;
+  concurrency_cap: number;
   quiet_start: string;
   quiet_end: string;
+  eligible_statuses: Set<TaskStatusValue>;
+  allowed_connectors: Set<string>;
 }
 
-function fromStatus(s: AutoRunStatus): FormState {
-  return {
-    enabled: s.enabled,
-    max_fix_loops: s.max_fix_loops,
-    wall_clock_minutes_override:
-      s.wall_clock_minutes_override == null ? "" : String(s.wall_clock_minutes_override),
-    default_connector_id: s.default_connector_id ?? "",
-    daily_cap: s.auto_run_daily_cap,
-    quiet_start:
-      s.auto_run_quiet_hours_start == null ? "" : String(s.auto_run_quiet_hours_start),
-    quiet_end:
-      s.auto_run_quiet_hours_end == null ? "" : String(s.auto_run_quiet_hours_end),
-  };
-}
+const ALL_TASK_STATUSES: TaskStatusValue[] = [
+  "backlog",
+  "ready",
+  "in_progress",
+  "verifying",
+  "needs_fixes",
+  "done",
+  "cancelled",
+];
 
 const STATUS_LABEL: Record<string, string> = {
   backlog: "Backlog",
@@ -50,6 +50,31 @@ const STATUS_LABEL: Record<string, string> = {
   done: "Done",
   cancelled: "Cancelled",
 };
+
+function fromStatus(s: AutoRunStatus): FormState {
+  return {
+    enabled: s.enabled,
+    max_fix_loops: s.max_fix_loops,
+    wall_clock_minutes_override:
+      s.wall_clock_minutes_override == null ? "" : String(s.wall_clock_minutes_override),
+    default_connector_id: s.default_connector_id ?? "",
+    daily_cap: s.auto_run_daily_cap,
+    hourly_cap: s.auto_run_hourly_cap ?? 0,
+    concurrency_cap: s.auto_run_concurrency_cap ?? 0,
+    quiet_start:
+      s.auto_run_quiet_hours_start == null ? "" : String(s.auto_run_quiet_hours_start),
+    quiet_end:
+      s.auto_run_quiet_hours_end == null ? "" : String(s.auto_run_quiet_hours_end),
+    eligible_statuses: new Set(s.auto_run_eligible_statuses ?? s.eligible_task_statuses ?? []),
+    allowed_connectors: new Set(s.auto_run_allowed_connectors ?? []),
+  };
+}
+
+function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
 
 function fmtHour(h: number | null): string {
   if (h == null) return "—";
@@ -120,14 +145,38 @@ export default function AutoRunPanel({ project, connectors }: Props) {
           : String(s.wall_clock_minutes_override)) ||
       form.default_connector_id !== (s.default_connector_id ?? "") ||
       form.daily_cap !== s.auto_run_daily_cap ||
+      form.hourly_cap !== (s.auto_run_hourly_cap ?? 0) ||
+      form.concurrency_cap !== (s.auto_run_concurrency_cap ?? 0) ||
       form.quiet_start !==
         (s.auto_run_quiet_hours_start == null
           ? ""
           : String(s.auto_run_quiet_hours_start)) ||
       form.quiet_end !==
-        (s.auto_run_quiet_hours_end == null ? "" : String(s.auto_run_quiet_hours_end))
+        (s.auto_run_quiet_hours_end == null ? "" : String(s.auto_run_quiet_hours_end)) ||
+      !setsEqual(form.eligible_statuses, new Set(s.auto_run_eligible_statuses ?? [])) ||
+      !setsEqual(form.allowed_connectors, new Set(s.auto_run_allowed_connectors ?? []))
     );
   }, [form, status.data]);
+
+  function toggleStatus(taskStatus: TaskStatusValue) {
+    setForm((s) => {
+      if (!s) return s;
+      const next = new Set(s.eligible_statuses);
+      if (next.has(taskStatus)) next.delete(taskStatus);
+      else next.add(taskStatus);
+      return { ...s, eligible_statuses: next };
+    });
+  }
+
+  function toggleConnector(id: string) {
+    setForm((s) => {
+      if (!s) return s;
+      const next = new Set(s.allowed_connectors);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return { ...s, allowed_connectors: next };
+    });
+  }
 
   function onSave() {
     if (!form) return;
@@ -148,6 +197,10 @@ export default function AutoRunPanel({ project, connectors }: Props) {
       auto_run_quiet_hours_start: quietStart,
       auto_run_quiet_hours_end: quietEnd,
       auto_run_daily_cap: form.daily_cap,
+      auto_run_hourly_cap: form.hourly_cap,
+      auto_run_concurrency_cap: form.concurrency_cap,
+      auto_run_eligible_statuses: Array.from(form.eligible_statuses),
+      auto_run_allowed_connectors: Array.from(form.allowed_connectors),
     });
   }
 
@@ -194,9 +247,7 @@ export default function AutoRunPanel({ project, connectors }: Props) {
             <>
               <UsageIndicator
                 subscription={subscription.data}
-                runsToday={data.runs_today}
-                cap={data.auto_run_daily_cap}
-                remaining={data.daily_cap_remaining}
+                data={data}
               />
 
               {data.in_quiet_hours && (
@@ -233,16 +284,71 @@ export default function AutoRunPanel({ project, connectors }: Props) {
                 <legend className="text-xs uppercase tracking-wide text-muted">
                   Eligible task statuses
                 </legend>
-                <div className="flex flex-wrap gap-1">
-                  {data.eligible_task_statuses.map((s) => (
-                    <span key={s} className={`status-pill status-${s}`}>
-                      {STATUS_LABEL[s] ?? s}
-                    </span>
-                  ))}
+                <div className="flex flex-wrap gap-1.5">
+                  {ALL_TASK_STATUSES.map((s) => {
+                    const on = form.eligible_statuses.has(s);
+                    return (
+                      <label
+                        key={s}
+                        className={`inline-flex items-center gap-1 cursor-pointer rounded border px-2 py-0.5 text-[11px] ${
+                          on
+                            ? `status-pill status-${s} border-transparent`
+                            : "border-border text-muted hover:text-fg"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="sr-only"
+                          checked={on}
+                          onChange={() => toggleStatus(s)}
+                        />
+                        {STATUS_LABEL[s] ?? s}
+                      </label>
+                    );
+                  })}
                 </div>
                 <p className="text-[11px] text-muted">
-                  Auto-run only queues tasks in these statuses. Other tasks
-                  stay parked until a human moves them.
+                  Auto-run only queues tasks in the checked statuses. Other
+                  tasks stay parked until a human moves them.
+                </p>
+              </fieldset>
+
+              <fieldset className="space-y-2">
+                <legend className="text-xs uppercase tracking-wide text-muted">
+                  Allowed connectors
+                </legend>
+                {connectors.length === 0 ? (
+                  <p className="text-[11px] text-muted">
+                    No connectors registered yet.
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {connectors.map((c) => {
+                      const on = form.allowed_connectors.has(c.connector_id);
+                      return (
+                        <label
+                          key={c.connector_id}
+                          className={`inline-flex items-center gap-1 cursor-pointer rounded border px-2 py-0.5 text-[11px] ${
+                            on
+                              ? "border-accent bg-accent/10 text-fg"
+                              : "border-border text-muted hover:text-fg"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={on}
+                            onChange={() => toggleConnector(c.connector_id)}
+                          />
+                          {c.display_name}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+                <p className="text-[11px] text-muted">
+                  Empty list = any enabled connector. Pick a subset to keep
+                  auto-run on a known-good tool.
                 </p>
               </fieldset>
 
@@ -289,7 +395,7 @@ export default function AutoRunPanel({ project, connectors }: Props) {
 
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted" htmlFor="ar-daily-cap">
-                    Daily auto-run cap
+                    Daily cap
                   </label>
                   <input
                     id="ar-daily-cap"
@@ -305,6 +411,50 @@ export default function AutoRunPanel({ project, connectors }: Props) {
                     }
                   />
                   <p className="text-[11px] text-muted">0 = unlimited</p>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-muted" htmlFor="ar-hourly-cap">
+                    Hourly window cap
+                  </label>
+                  <input
+                    id="ar-hourly-cap"
+                    type="number"
+                    min={0}
+                    max={500}
+                    className="field"
+                    value={form.hourly_cap}
+                    onChange={(e) =>
+                      setForm(
+                        (s) => s && { ...s, hourly_cap: Number(e.target.value) },
+                      )
+                    }
+                  />
+                  <p className="text-[11px] text-muted">
+                    Rolling 1-hour window. 0 = unlimited.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-muted" htmlFor="ar-concurrency-cap">
+                    Concurrency cap
+                  </label>
+                  <input
+                    id="ar-concurrency-cap"
+                    type="number"
+                    min={0}
+                    max={64}
+                    className="field"
+                    value={form.concurrency_cap}
+                    onChange={(e) =>
+                      setForm(
+                        (s) => s && { ...s, concurrency_cap: Number(e.target.value) },
+                      )
+                    }
+                  />
+                  <p className="text-[11px] text-muted">
+                    Max simultaneous auto-runs. 0 = unlimited.
+                  </p>
                 </div>
 
                 <div className="flex flex-col gap-1">
@@ -340,7 +490,7 @@ export default function AutoRunPanel({ project, connectors }: Props) {
                   tasks. Manual runs are unaffected. Wrap-around (e.g. 22→6)
                   is supported. Leave blank to disable.
                 </p>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted" htmlFor="ar-quiet-start">
                       Start (hour 0–23)
@@ -434,46 +584,77 @@ function StatusDot({ data }: { data: AutoRunStatus | undefined }) {
   );
 }
 
-function UsageIndicator({
-  subscription,
-  runsToday,
+function UsageBar({
+  label,
+  used,
   cap,
   remaining,
+  hint,
 }: {
-  subscription: SubscriptionInfo | undefined;
-  runsToday: number;
+  label: string;
+  used: number;
   cap: number;
   remaining: number | null;
+  hint?: string;
 }) {
-  const pct = quotaPct(subscription);
+  const pct =
+    cap === 0 ? 100 : Math.min(100, Math.round((used / Math.max(cap, 1)) * 100));
+  const barCls =
+    cap === 0
+      ? "h-full bg-accent/40"
+      : remaining === 0
+        ? "h-full bg-danger"
+        : pct >= 80
+          ? "h-full bg-warning"
+          : "h-full bg-accent";
   return (
-    <div className="rounded border border-border bg-panel2 p-3 text-[11px]">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-muted">Auto-runs today</span>
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-1 text-[11px]">
+        <span className="text-muted">{label}</span>
         <span className="font-mono">
-          {runsToday}
+          {used}
           {cap === 0 ? " (no cap)" : ` / ${cap}`}
         </span>
       </div>
       <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-border">
-        <div
-          className={
-            cap === 0
-              ? "h-full bg-accent/60"
-              : remaining === 0
-                ? "h-full bg-danger"
-                : "h-full bg-accent"
-          }
-          style={{
-            width:
-              cap === 0
-                ? "100%"
-                : `${Math.min(100, Math.round((runsToday / cap) * 100))}%`,
-          }}
-        />
+        <div className={barCls} style={{ width: `${pct}%` }} />
       </div>
+      {hint && <p className="mt-0.5 text-[10px] text-muted">{hint}</p>}
+    </div>
+  );
+}
+
+function UsageIndicator({
+  subscription,
+  data,
+}: {
+  subscription: SubscriptionInfo | undefined;
+  data: AutoRunStatus;
+}) {
+  const pct = quotaPct(subscription);
+  return (
+    <div className="rounded border border-border bg-panel2 p-3 space-y-2">
+      <UsageBar
+        label="Auto-runs today"
+        used={data.runs_today}
+        cap={data.auto_run_daily_cap}
+        remaining={data.daily_cap_remaining}
+      />
+      <UsageBar
+        label="Last hour"
+        used={data.runs_last_hour}
+        cap={data.auto_run_hourly_cap}
+        remaining={data.hourly_cap_remaining}
+      />
+      <UsageBar
+        label="Active auto-runs"
+        used={data.active_auto_runs}
+        cap={data.auto_run_concurrency_cap}
+        remaining={data.concurrency_remaining}
+        hint="Counts queued + running auto-launched runs against the concurrency cap."
+      />
       {pct != null && (
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-muted">
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-muted border-t border-border">
           <span>Subscription quota</span>
           <span className="font-mono">{Math.round(pct)}%</span>
         </div>
@@ -502,7 +683,7 @@ function RecentRuns({
   return (
     <fieldset className="rounded border border-border p-3">
       <legend className="px-1 text-xs uppercase tracking-wide text-muted">
-        Recent runs ({autoCount} auto)
+        Recent runs ({autoCount} auto-launched)
       </legend>
       <ul className="-mx-1 max-h-48 overflow-auto text-[11px]">
         {runs.map((r) => (

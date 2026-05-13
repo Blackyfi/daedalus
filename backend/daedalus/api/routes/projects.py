@@ -173,6 +173,10 @@ async def create_project(
         auto_run_quiet_hours_start=body.auto_run_quiet_hours_start,
         auto_run_quiet_hours_end=body.auto_run_quiet_hours_end,
         auto_run_daily_cap=body.auto_run_daily_cap,
+        auto_run_concurrency_cap=body.auto_run_concurrency_cap,
+        auto_run_hourly_cap=body.auto_run_hourly_cap,
+        auto_run_allowed_connectors=list(body.auto_run_allowed_connectors),
+        auto_run_eligible_statuses=[s.value for s in body.auto_run_eligible_statuses],
     )
     db.add(proj)
     await db.flush()
@@ -214,6 +218,12 @@ async def patch_project(
 ):
     proj = await _get_project_or_404(db, pid, user)
     fields = body.model_dump(exclude_unset=True)
+    # TaskStatus list -> raw strings for ARRAY(Text). Other fields are POD.
+    if "auto_run_eligible_statuses" in fields and fields["auto_run_eligible_statuses"] is not None:
+        fields["auto_run_eligible_statuses"] = [
+            (s.value if hasattr(s, "value") else s)
+            for s in fields["auto_run_eligible_statuses"]
+        ]
     for k, v in fields.items():
         setattr(proj, k, v)
     await db.flush()
