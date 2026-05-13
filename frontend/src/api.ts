@@ -58,8 +58,50 @@ export interface Project {
   verifier_model: string | null;
   argus_enabled: boolean;
   wall_clock_minutes_override: number | null;
+  auto_run_quiet_hours_start: number | null;
+  auto_run_quiet_hours_end: number | null;
+  auto_run_daily_cap: number;
   created_at: string;
   updated_at: string;
+}
+
+// Auto-run config + derived state for the AutoRunPanel.
+export interface AutoRunRecentRun {
+  id: string;
+  task_id: string | null;
+  task_title: string | null;
+  state: Run["state"];
+  kind: Run["kind"];
+  started_at: string | null;
+  finished_at: string | null;
+  auto_triggered: boolean;
+  created_at: string;
+}
+
+export interface AutoRunStatus {
+  project_id: string;
+  enabled: boolean;
+  max_fix_loops: number;
+  wall_clock_minutes_override: number | null;
+  default_connector_id: string | null;
+  auto_run_quiet_hours_start: number | null;
+  auto_run_quiet_hours_end: number | null;
+  auto_run_daily_cap: number;
+  eligible_task_statuses: Task["status"][];
+  in_quiet_hours: boolean;
+  runs_today: number;
+  daily_cap_remaining: number | null;
+  recent_runs: AutoRunRecentRun[];
+}
+
+export interface AutoRunConfigPatch {
+  auto_run_fix?: boolean;
+  max_fix_loops?: number;
+  wall_clock_minutes_override?: number | null;
+  default_connector_id?: string | null;
+  auto_run_quiet_hours_start?: number | null;
+  auto_run_quiet_hours_end?: number | null;
+  auto_run_daily_cap?: number;
 }
 
 // Anthropic models surfaced in the project settings dropdowns. Keep in sync

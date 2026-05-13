@@ -51,6 +51,9 @@ class ProjectIn(BaseModel):
     verifier_model: str | None = Field(default=None, max_length=120)
     argus_enabled: bool = True
     wall_clock_minutes_override: int | None = Field(default=None, ge=1, le=1440)
+    auto_run_quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
+    auto_run_quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
+    auto_run_daily_cap: int = Field(default=0, ge=0, le=500)
 
 
 class ProjectPatch(BaseModel):
@@ -66,6 +69,9 @@ class ProjectPatch(BaseModel):
     verifier_model: str | None = Field(default=None, max_length=120)
     argus_enabled: bool | None = None
     wall_clock_minutes_override: int | None = Field(default=None, ge=1, le=1440)
+    auto_run_quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
+    auto_run_quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
+    auto_run_daily_cap: int | None = Field(default=None, ge=0, le=500)
 
 
 class ProjectOut(_Base):
@@ -84,8 +90,55 @@ class ProjectOut(_Base):
     verifier_model: str | None
     argus_enabled: bool
     wall_clock_minutes_override: int | None
+    auto_run_quiet_hours_start: int | None
+    auto_run_quiet_hours_end: int | None
+    auto_run_daily_cap: int
     created_at: datetime
     updated_at: datetime
+
+
+# --- auto-run ---
+
+class AutoRunConfigPatch(BaseModel):
+    """Subset of project settings exposed by the AutoRun panel.
+
+    All fields are optional so the panel can PATCH partial updates.
+    """
+    auto_run_fix: bool | None = None
+    max_fix_loops: int | None = Field(default=None, ge=0, le=20)
+    wall_clock_minutes_override: int | None = Field(default=None, ge=1, le=1440)
+    default_connector_id: str | None = None
+    auto_run_quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
+    auto_run_quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
+    auto_run_daily_cap: int | None = Field(default=None, ge=0, le=500)
+
+
+class AutoRunRecentRun(_Base):
+    id: uuid.UUID
+    task_id: uuid.UUID | None
+    task_title: str | None
+    state: str
+    kind: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    auto_triggered: bool
+    created_at: datetime
+
+
+class AutoRunStatusOut(BaseModel):
+    project_id: uuid.UUID
+    enabled: bool
+    max_fix_loops: int
+    wall_clock_minutes_override: int | None
+    default_connector_id: str | None
+    auto_run_quiet_hours_start: int | None
+    auto_run_quiet_hours_end: int | None
+    auto_run_daily_cap: int
+    eligible_task_statuses: list[str]
+    in_quiet_hours: bool
+    runs_today: int
+    daily_cap_remaining: int | None
+    recent_runs: list[AutoRunRecentRun]
 
 
 # --- task ---
