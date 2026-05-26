@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend (with dev extras)
+        run: pip install -e ".[dev]"
+      - name: pytest
+        run: pytest -q
+
+  migrations:
+    name: Alembic chain (single head + upgrade from empty)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: daedalus_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/daedalus_ci
+      REDIS_URL: redis://localhost:6379/0
+      SESSION_SECRET: ci-session-secret-ci-session-secret
+      PASSWORD_PEPPER: ci-password-pepper-ci-password-pepper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend
+        run: pip install -e ".[dev]"
+      - name: Assert exactly one Alembic head
+        run: |
+          heads="$(alembic heads 2>/dev/null | grep -c '(head)' || true)"
+          echo "alembic heads: $heads"
+          test "$heads" -eq 1 || { echo "::error::expected 1 alembic head, found $heads"; alembic heads; exit 1; }
+      - name: Upgrade from empty database
+        run: alembic upgrade head
+
+  frontend-build:
+    name: Frontend build (tsc + vite)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        run: npm install --no-audit --no-fund
+      - name: Build
+        run: npm run build
