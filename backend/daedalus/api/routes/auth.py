@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from daedalus.auth import audit, email_otp, totp
 from daedalus.auth.dependencies import NO_MTLS_SENTINEL
 from daedalus.auth.passwords import needs_rehash, hash_password, verify_password
-from daedalus.auth.sessions import COOKIE_NAME, create_session, revoke_session, sign_session_id, unsign_session_id
+from daedalus.auth.sessions import (
+    COOKIE_NAME,
+    create_session,
+    load_session,
+    revoke_session,
+    sign_session_id,
+    unsign_session_id,
+)
 from daedalus.core.settings import get_settings
 from daedalus.db.base import get_session
 from daedalus.db.models import User
@@ -174,6 +181,43 @@ async def step_totp(
     )
     await db.commit()
     return {"status": "ok", "user": {"id": str(user.id), "email": user.email, "role": user.role.value}}
+
+
+@router.get("/status")
+async def status_probe(
+    cert_fp: Annotated[str | None, Header(alias="X-Client-Cert-Fingerprint")] = None,
+    session_cookie: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
+    db: AsyncSession = Depends(get_session),
+):
+    """Boot probe used by the SPA to decide login-vs-shell.
+
+    Always 200 — never raises 401. Returning 200 with ``authenticated=false``
+    keeps the browser console clean (a 401 from the auth probe at every
+    page load looks like a bug, even though it's the intended signal).
+    """
+    fp = (cert_fp or "").lower() or (
+        NO_MTLS_SENTINEL if not get_settings().require_client_cert else None
+    )
+    if not session_cookie or not fp:
+        return {"authenticated": False, "user": None}
+    sid = unsign_session_id(
+        session_cookie,
+        max_age_seconds=get_settings().session_hard_hours * 3600,
+    )
+    if sid is None:
+        return {"authenticated": False, "user": None}
+    loaded = await load_session(db, sid, cert_fp=fp)
+    if not loaded:
+        return {"authenticated": False, "user": None}
+    _, user = loaded
+    return {
+        "authenticated": True,
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+            "role": user.role.value,
+        },
+    }
 
 
 @router.post("/logout")

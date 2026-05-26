@@ -13,23 +13,6 @@ nice-to-have.
 
 ---
 
-## Known issues (tracked)
-
-- [ ] **DAEDALUS-OBJSTORE-1** — `tests/test_object_store.py::
-  test_object_store_falls_back_to_local_filesystem` fails when
-  `S3_ENDPOINT` (or any `S3_*` / `MINIO_BUCKET`) is set in the host
-  environment. `Settings(...)` kwargs are aliased to the env-var name
-  (e.g. field `s3_endpoint` ↔ alias `S3_ENDPOINT`); pydantic-settings
-  2.6 resolves init kwargs by alias, and our shipped tests pass the
-  field name (`s3_endpoint='http://127.0.0.1:9'`) so the env-var value
-  wins and the boto3 client talks to the real MinIO endpoint instead
-  of the unreachable stub. Fix is to either (a) clear `S3_*` env vars
-  in `backend/tests/conftest.py`, (b) pass the alias name in the test,
-  or (c) bump pydantic-settings to ≥ 2.7 where init-source priority is
-  enforced regardless of alias resolution. Not addressed here because
-  the failure pre-dates the auto-run UI work and is a test-isolation
-  bug, not an ObjectStore regression.
-
 ## Deferred by design
 
 - [ ] **Connector signing (spec §10.6).** Skipped — single-org

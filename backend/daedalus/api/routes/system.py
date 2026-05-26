@@ -32,21 +32,6 @@ from daedalus.pythia.probe import (
 router = APIRouter()
 
 
-@router.get("/config")
-async def get_config(
-    user: Annotated[User, Depends(current_user)],
-) -> dict[str, Any]:
-    """Static, read-only config exposed to the SPA.
-
-    Currently just the configured workspaces root so the Projects form can
-    auto-suggest `<workspaces_root>/<slug>` as the user types the project name.
-    Auth-gated because the path is internal infrastructure detail.
-    """
-    del user  # auth gate only
-    settings = get_settings()
-    return {"workspaces_root": settings.workspaces_root}
-
-
 @router.get("/subscription")
 async def get_subscription(
     user: Annotated[User, Depends(current_user)],

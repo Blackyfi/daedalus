@@ -15,11 +15,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 import structlog
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from daedalus.db.models import (
-    OPEN_MERGE_BATCH_STATES,
     MergeBatch,
     MergeBatchItem,
     MergeBatchState,
@@ -72,59 +70,6 @@ class BatchResult:
         return sum(1 for r in self.results if r.state == "skipped-conflict")
 
 
-class MergeBatchClaimConflict(Exception):
-    """Raised when a batch can't be created because some of its candidate
-    tasks are already claimed by another open batch (state in
-    OPEN_MERGE_BATCH_STATES). Carries a mapping task_id -> batch_id so the
-    caller can either surface or redirect to the existing batch."""
-
-    def __init__(
-        self,
-        conflicts: dict[uuid.UUID, uuid.UUID],
-        message: str | None = None,
-    ) -> None:
-        self.conflicts = conflicts
-        if message is None:
-            sample = ", ".join(
-                f"task {tid} → batch {bid}" for tid, bid in list(conflicts.items())[:3]
-            )
-            extra = "" if len(conflicts) <= 3 else f" (+{len(conflicts) - 3} more)"
-            message = (
-                f"{len(conflicts)} task(s) already belong to an open merge batch: "
-                f"{sample}{extra}. Ship or abort the existing batch before creating a new one."
-            )
-        super().__init__(message)
-
-
-async def find_claim_conflicts(
-    db: AsyncSession,
-    project_id: uuid.UUID,
-    candidate_task_ids: list[uuid.UUID],
-) -> dict[uuid.UUID, uuid.UUID]:
-    """Return {task_id: open_batch_id} for any candidate task that is
-    already an item of a non-terminal MergeBatch in the same project.
-
-    "Open" means batch.state ∈ OPEN_MERGE_BATCH_STATES. Terminal states
-    (shipped/failed/aborted) release the claim."""
-    if not candidate_task_ids:
-        return {}
-    res = await db.execute(
-        select(MergeBatchItem.task_id, MergeBatchItem.batch_id)
-        .join(MergeBatch, MergeBatch.id == MergeBatchItem.batch_id)
-        .where(
-            MergeBatch.project_id == project_id,
-            MergeBatch.state.in_(OPEN_MERGE_BATCH_STATES),
-            MergeBatchItem.task_id.in_(candidate_task_ids),
-        )
-    )
-    conflicts: dict[uuid.UUID, uuid.UUID] = {}
-    for task_id, batch_id in res.all():
-        if task_id is None:
-            continue
-        conflicts.setdefault(task_id, batch_id)
-    return conflicts
-
-
 _CATEGORY_TO_ITEM_STATE: dict[str, MergeItemState] = {
     "clean": MergeItemState.merged,
     "conflict": MergeItemState.skipped_conflict,
@@ -158,17 +103,7 @@ async def execute_batch(
 ) -> BatchResult:
     """Materialize the integration branch and sequentially merge `clean` plans.
     Persists a MergeBatch + per-branch MergeBatchItem and returns a structured
-    BatchResult mirroring the persisted state.
-
-    Raises `MergeBatchClaimConflict` if any candidate task is already part
-    of another open batch in the same project. The caller should surface
-    the conflict (or redirect the user to the existing batch) rather than
-    create a duplicate batch over the same task set."""
-    candidate_task_ids = [p.candidate.task_id for p in plans if p.candidate.task_id is not None]
-    conflicts = await find_claim_conflicts(db, project_id, candidate_task_ids)
-    if conflicts:
-        raise MergeBatchClaimConflict(conflicts)
-
+    BatchResult mirroring the persisted state."""
     batch_id = uuid.uuid4()
     integration_branch = f"daedalus-merge-{batch_id}"
     worktree_dir = os.path.join(workspace_path, "runs", "merges", str(batch_id))

@@ -5,13 +5,50 @@
   "command": "claude-multi",
   "args": ["--dangerously-skip-permissions", "--max-subagents=4"],
   "env": {
-    "ANTHROPIC_API_KEY": "{{secret:anthropic_key}}"
+    "ANTHROPIC_API_KEY": "{{secret:anthropic_key}}",
+
+    "CI": "true",
+    "DEBIAN_FRONTEND": "noninteractive",
+    "NEEDRESTART_MODE": "a",
+    "TZ": "UTC",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+
+    "PAGER": "cat",
+    "GIT_PAGER": "cat",
+    "MANPAGER": "cat",
+    "EDITOR": "true",
+    "VISUAL": "true",
+
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "/bin/echo",
+    "SSH_ASKPASS": "/bin/echo",
+
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1",
+    "PIP_NO_INPUT": "1",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    "PIP_ROOT_USER_ACTION": "ignore",
+
+    "NPM_CONFIG_YES": "true",
+    "NPM_CONFIG_FUND": "false",
+    "NPM_CONFIG_AUDIT": "false",
+    "NPM_CONFIG_PROGRESS": "false",
+    "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+    "YARN_ENABLE_PROGRESS_BARS": "false",
+
+    "CARGO_TERM_PROGRESS_WHEN": "never",
+
+    "DOCKER_CLI_HINTS": "false",
+
+    "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+    "DOTNET_NOLOGO": "1"
   },
   "workdir": "{{project.workspace_path}}",
   "permission_profile": "yolo",
   "input_format": {
     "kind": "stdin_prompt",
-    "template": "Goal: {{task.title}}\n\n{{task.description}}\n\nAcceptance criteria:\n{{task.acceptance_criteria}}\n\nDelegate sub-tasks as needed; emit <<TASK_DONE>> when finished.\n"
+    "template": "You are operating autonomously inside Daedalus, an automated coding agent platform. There is no human to consult during this run. When you encounter a choice, make the best reasonable decision based on industry best practices and proceed. Never wait for input that will not come.\n\nYour work will be verified by an automated grader against the acceptance criteria. Uncommitted changes are invisible to the grader — commit every change you make before you finish (`git add -A && git commit -m \"...\"`). Delegate sub-tasks as you see fit.\n\nWhen you are done, end your final assistant message with a structured report followed by the sentinel `<<TASK_DONE>>` on its own line:\n\n  Files changed: <list>\n  Verify commands: <commands run and their result>\n  Acceptance criteria: <map each criterion to evidence>\n  <<TASK_DONE>>\n\nGoal: {{task.title}}\n\n{{task.description}}\n\nAcceptance criteria:\n{{task.acceptance_criteria}}\n"
   },
   "done_signal": {
     "kind": "regex",
@@ -20,8 +57,9 @@
   "exit_on_done": true,
   "verify_commands": [
     "git status --porcelain",
-    "test -f package.json && npm test --silent || true",
-    "test -f pyproject.toml && (ruff check . && pytest -q) || true"
+    "if [ -f package.json ]; then npm test --silent; fi",
+    "if [ -f pyproject.toml ]; then ruff check . && pytest -q; fi",
+    "if [ -f go.mod ]; then go vet ./... && go test ./...; fi"
   ],
   "argus_profile": {
     "command": "claude",

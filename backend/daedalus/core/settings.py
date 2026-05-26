@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     workspaces_root: str = Field("/workspaces", alias="TALOS_WORKSPACES_ROOT")
     connectors_dir: str = Field("/etc/daedalus/connectors", alias="TALOS_CONNECTORS_DIR")
 
+    # uid/gid that talos+argus-worker run as. The api/hermes containers run as
+    # root and create worktrees, so they must chown the result to this uid so
+    # the agent (running under it) can write to its own worktree.
+    agent_uid: int | None = Field(1000, alias="DAEDALUS_AGENT_UID")
+    agent_gid: int | None = Field(1000, alias="DAEDALUS_AGENT_GID")
+
     # --- hermes scheduling ---
     # Global ceiling on concurrent runs across all projects (one Daedalus-managed
     # run per project; the cap limits how many *projects* can run at once).
@@ -65,6 +71,18 @@ class Settings(BaseSettings):
     project_lease_grace_seconds: int = Field(300, alias="PROJECT_LEASE_GRACE_SECONDS")
     # Heartbeat interval for refreshing the project lease while a run is active.
     project_lease_heartbeat_seconds: int = Field(60, alias="PROJECT_LEASE_HEARTBEAT_SECONDS")
+    # Wall-clock budget for Talos to drain in-flight runs on SIGTERM. Each
+    # active PTY gets killed and its worker thread runs `_complete_run` →
+    # cleanup, which deletes `hermes:lock:<rid>` so Hermes' bookkeeper can
+    # finalize the run on its next tick. Must be < the docker-compose
+    # `stop_grace_period` for the talos service or the kernel SIGKILLs us
+    # mid-cleanup. 45s leaves ~15s headroom against a 60s grace.
+    talos_shutdown_drain_seconds: int = Field(45, alias="TALOS_SHUTDOWN_DRAIN_SECONDS")
+
+    # Hermes bookkeeper runs `git worktree prune` per project at this cadence
+    # to keep `.git/worktrees/` admin entries from accumulating across run
+    # lifecycles. 5 minutes is fine — the operation is cheap and idempotent.
+    worktree_prune_interval_seconds: int = Field(300, alias="WORKTREE_PRUNE_INTERVAL_SECONDS")
 
     # --- pythia (subscription oracle) ---
     pythia_refresh_seconds: int = Field(600, alias="PYTHIA_REFRESH_SECONDS")

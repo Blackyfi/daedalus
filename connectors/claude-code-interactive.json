@@ -7,7 +7,44 @@
     "--dangerously-skip-permissions"
   ],
   "env": {
-    "_DAEDALUS_AUTH_NOTE": "blank — `claude` reads OAuth from /root/.claude. Setting ANTHROPIC_API_KEY here would force API-key billing instead of the subscription."
+    "_DAEDALUS_AUTH_NOTE": "blank — `claude` reads OAuth from /root/.claude. Setting ANTHROPIC_API_KEY here would force API-key billing instead of the subscription.",
+
+    "CI": "true",
+    "DEBIAN_FRONTEND": "noninteractive",
+    "NEEDRESTART_MODE": "a",
+    "TZ": "UTC",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+
+    "PAGER": "cat",
+    "GIT_PAGER": "cat",
+    "MANPAGER": "cat",
+    "EDITOR": "true",
+    "VISUAL": "true",
+
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "/bin/echo",
+    "SSH_ASKPASS": "/bin/echo",
+
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1",
+    "PIP_NO_INPUT": "1",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    "PIP_ROOT_USER_ACTION": "ignore",
+
+    "NPM_CONFIG_YES": "true",
+    "NPM_CONFIG_FUND": "false",
+    "NPM_CONFIG_AUDIT": "false",
+    "NPM_CONFIG_PROGRESS": "false",
+    "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+    "YARN_ENABLE_PROGRESS_BARS": "false",
+
+    "CARGO_TERM_PROGRESS_WHEN": "never",
+
+    "DOCKER_CLI_HINTS": "false",
+
+    "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+    "DOTNET_NOLOGO": "1"
   },
   "workdir": "{{project.workspace_path}}",
   "permission_profile": "yolo",
@@ -23,8 +60,9 @@
   "exit_on_done": true,
   "verify_commands": [
     "git status --porcelain",
-    "test -f package.json && npm test --silent || true",
-    "test -f pyproject.toml && (ruff check . && pytest -q) || true"
+    "if [ -f package.json ]; then npm test --silent; fi",
+    "if [ -f pyproject.toml ]; then ruff check . && pytest -q; fi",
+    "if [ -f go.mod ]; then go vet ./... && go test ./...; fi"
   ],
   "argus_profile": {
     "command": "claude",

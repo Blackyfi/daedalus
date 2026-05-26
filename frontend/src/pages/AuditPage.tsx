@@ -31,14 +31,14 @@ export default function AuditPage() {
 
   return (
     <section className="panel">
-      <header className="mb-3 flex items-center justify-between">
+      <header className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-sm uppercase tracking-wide text-muted">Audit log</h2>
-        <div className="flex items-center gap-1 text-xs">
+        <div className="flex flex-wrap items-center gap-1 text-xs">
           {FILTERS.map((f) => (
             <button
               key={f.id}
               onClick={() => setFilter(f.id)}
-              className={`rounded px-2 py-0.5 ${
+              className={`rounded px-2 py-1 ${
                 filter === f.id
                   ? "bg-accent/10 text-accent"
                   : "text-muted hover:text-text"
@@ -57,7 +57,8 @@ export default function AuditPage() {
       {events.isError && (
         <p className="text-xs text-danger">{(events.error as Error).message}</p>
       )}
-      <table className="w-full text-xs">
+      <div className="-mx-3 overflow-x-auto sm:-mx-4 lg:mx-0">
+      <table className="w-full min-w-[720px] text-xs">
         <thead>
           <tr className="text-left uppercase tracking-wide text-muted">
             <th className="px-2 py-1">at</th>
@@ -84,16 +85,19 @@ export default function AuditPage() {
               <td className="px-2 py-1 text-muted">
                 {e.actor_ip || "—"}
                 {e.actor_cert_fp && (
-                  <div className="text-[10px]">{e.actor_cert_fp.slice(0, 16)}…</div>
+                  <div className="text-[11px] sm:text-[10px]">
+                    {e.actor_cert_fp.slice(0, 16)}…
+                  </div>
                 )}
               </td>
-              <td className="px-2 py-1 text-muted">
+              <td className="max-w-[40ch] px-2 py-1 text-muted">
                 <PayloadCell payload={e.payload} />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
     </section>
   );
 }

@@ -138,9 +138,10 @@ export default function ProjectSettings({ project, connectors }: Props) {
             onChange={(v) => setForm((s) => ({ ...s, verifier_model: v }))}
           />
 
-          <label className="flex items-center gap-2">
+          <label className="flex min-h-[40px] cursor-pointer items-center gap-2 py-1 md:min-h-0">
             <input
               type="checkbox"
+              className="h-4 w-4 cursor-pointer accent-accent md:h-3.5 md:w-3.5"
               checked={form.argus_enabled}
               onChange={(e) =>
                 setForm((s) => ({ ...s, argus_enabled: e.target.checked }))
@@ -187,19 +188,21 @@ export default function ProjectSettings({ project, connectors }: Props) {
             />
           </div>
 
-          <div className="flex items-center justify-between pt-1">
+          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-between">
             <button
-              className="btn"
+              className="btn w-full sm:w-auto"
               onClick={() => setForm(fromProject(project))}
               disabled={!dirty || save.isPending}
             >
               Reset
             </button>
             {!dirty && !save.isPending && (
-              <span className="text-[11px] text-muted">no changes</span>
+              <span className="hidden text-[11px] text-muted sm:inline">
+                no changes
+              </span>
             )}
             <button
-              className="btn btn-primary"
+              className="btn btn-primary w-full sm:w-auto"
               onClick={() => save.mutate()}
               disabled={!dirty || save.isPending}
             >

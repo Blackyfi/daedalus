@@ -16,16 +16,15 @@ from fastapi.responses import FileResponse
 from daedalus.api.routes import (
     audit,
     auth,
-    autorun,
     connectors,
     diagnostics,
     discovery,
     ideas,
     internal,
+    kpis,
+    merges,
     notes,
-    notification_prefs,
     plans,
-    project_ideas,
     projects,
     runs,
     system,
@@ -89,19 +88,18 @@ app.include_router(auth.router,       prefix=f"{PREFIX}/auth",      tags=["auth"
 if webauthn is not None:
     app.include_router(webauthn.router, prefix=f"{PREFIX}/auth/webauthn", tags=["auth"])
 app.include_router(projects.router,   prefix=f"{PREFIX}/projects",  tags=["projects"])
+app.include_router(merges.router,     prefix=f"{PREFIX}/projects",  tags=["merges"])
 app.include_router(tasks.router,      prefix=PREFIX,                tags=["tasks"])
 app.include_router(ideas.router,      prefix=PREFIX,                tags=["ideas"])
-app.include_router(project_ideas.router, prefix=PREFIX,             tags=["project-ideas"])
 app.include_router(notes.router,      prefix=PREFIX,                tags=["notes"])
 app.include_router(connectors.router, prefix=f"{PREFIX}/connectors", tags=["connectors"])
 app.include_router(plans.router,      prefix=PREFIX,                tags=["plans"])
 app.include_router(runs.router,       prefix=f"{PREFIX}/runs",      tags=["runs"])
-app.include_router(autorun.router,    prefix=f"{PREFIX}/autorun",   tags=["autorun"])
 app.include_router(audit.router,      prefix=f"{PREFIX}/audit",     tags=["audit"])
 app.include_router(discovery.router,  prefix=f"{PREFIX}/discover",  tags=["discovery"])
 app.include_router(system.router,     prefix=f"{PREFIX}/system",    tags=["system"])
 app.include_router(diagnostics.router, prefix=f"{PREFIX}/diagnostics", tags=["diagnostics"])
-app.include_router(notification_prefs.router, prefix=f"{PREFIX}/account", tags=["account"])
+app.include_router(kpis.router,       prefix=f"{PREFIX}/kpis",      tags=["kpis"])
 app.include_router(internal.router,   prefix="/api/internal",       tags=["internal"])
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"

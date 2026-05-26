@@ -82,8 +82,8 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-bg">
-      <div className="panel w-[420px]">
+    <div className="flex min-h-screen items-center justify-center bg-bg px-4 py-8">
+      <div className="panel w-full max-w-[420px]">
         <h1 className="mb-1 text-xl font-semibold text-accent">DAEDALUS</h1>
         <p className="mb-4 text-xs text-muted">
           mTLS &amp; 3-factor login. Your client cert was already accepted at TLS handshake.

@@ -31,7 +31,7 @@ const RUN_ALL: Algo = {
       caption: "End-to-end flow: from the Run-all button to a task being verified",
       chart: `
 flowchart TD
-  click([User clicks &quot;Run all&quot; on the Project page]) --> confirm{Confirm dialog<br/>shows N tasks}
+  userClick([User clicks &quot;Run all&quot; on the Project page]) --> confirm{Confirm dialog<br/>shows N tasks}
   confirm -->|cancel| stop1([noop])
   confirm -->|ok| post[POST /api/v1/projects/:pid/run-all]
 
@@ -199,8 +199,8 @@ flowchart LR
 flowchart TD
   start([Probe starts]) --> hasCreds{Credentials file?}
   hasCreds -->|no| missing([cli_missing])
-  hasCreds -->|yes| call[GET /api/oauth/profile]
-  call --> resp{HTTP status}
+  hasCreds -->|yes| profileCall[GET /api/oauth/profile]
+  profileCall --> resp{HTTP status}
   resp -->|timeout| timeout([timeout])
   resp -->|401| auth([auth_required])
   resp -->|200| usage[GET /api/oauth/usage]
@@ -255,7 +255,7 @@ sequenceDiagram
   end
 
   SPA->>Iris: WS /ws/pty/:rid
-  Iris->>R: XREAD pty:&lt;rid&gt; from id=0
+  Iris->>R: XREAD pty:[rid] from id=0
   R-->>Iris: retained PTY frames
   loop per frame
     Iris-->>SPA: {t:"data", d}
@@ -301,15 +301,15 @@ flowchart TD
   banner --> getStatus[GET /projects/:id/git-status?refresh=true]
 
   getStatus --> probe[git_status.get_status]
-  probe --> cache{Redis cache hit?<br/>(skipped on refresh)}
+  probe --> cache{"Redis cache hit?<br/>skipped on refresh"}
   cache -->|hit| serve[Return cached]
   cache -->|miss / refresh| isRepo{git rev-parse --git-dir}
   isRepo -->|no| notRepo([is_git_repo=false])
-  isRepo -->|yes| upstream[git rev-parse --abbrev-ref @{u}]
+  isRepo -->|yes| upstream["git rev-parse --abbrev-ref @{u}"]
   upstream -->|no upstream| local([local-only repo])
   upstream -->|ok| fetch[git fetch with timeout]
   fetch -->|fail| markFail[fetch_failed=true · keep last counts]
-  fetch -->|ok| revList[git rev-list --left-right --count @{u}...HEAD]
+  fetch -->|ok| revList["git rev-list --left-right --count @{u}...HEAD"]
   revList --> counts[behind_count, ahead_count]
   counts --> writeCache[(Redis cache EX 60s)]
   markFail --> writeCache
@@ -328,7 +328,93 @@ flowchart TD
   ],
 };
 
-const ALGORITHMS: Algo[] = [RUN_ALL, PROJECT_LEASE, PYTHIA, LIVE_RUNNER, GIT_GUARD];
+// ── Agent prompt pipeline ──────────────────────────────────────────────────
+
+const PROMPT_PIPELINE: Algo = {
+  id: "prompt-pipeline",
+  title: "Agent prompt pipeline",
+  blurb:
+    "From a claimed run to the first byte the agent reads. Hermes freezes a " +
+    "connector snapshot on the run row, Talos renders the template against " +
+    "the task fields, and the prompt is delivered as a trailing CLI argument " +
+    "(claude --print refuses stdin from a TTY). Worktree pre-flight ensures " +
+    "compiled artefacts can never end up in the diff Argus grades.",
+  refs: [
+    "backend/daedalus/hermes/scheduler.py: _build_payload (~797)",
+    "backend/daedalus/hermes/client.py: _create_run, _ensure_artifact_gitignore",
+    "backend/daedalus/talos/runner.py: _execute_task, _build_prompt, _render_template",
+    "backend/daedalus/talos/claude_trust.py: trust_workdir",
+    "connectors/claude-code.json (and siblings)",
+  ],
+  diagrams: [
+    {
+      id: "prompt-pipeline-flow",
+      caption: "Claim → render → argv delivery → PTY spawn → stream capture",
+      chart: `
+flowchart TD
+  claim[Run claimed by Hermes worker] --> snapshot[Read connector_snapshot frozen on the run row<br/>·command·args·env·input_format·verify_commands·resource_limits]
+  snapshot --> wt[Create per-run git worktree<br/>git worktree add -b daedalus-run-&lt;run_id&gt;]
+  wt --> gi[Pre-flight .gitignore patch<br/>append __pycache__/ · *.py[cod] · node_modules/ · dist/ · target/ · …]
+  gi --> chown[chown worktree to daedalus uid 1000<br/>so the agent can write]
+  chown --> payload[Build payload dict<br/>{connector_spec, task, project, resource_limits}]
+  payload --> pub[PUBLISH hermes:signal:&lt;run_id&gt; action=run]
+
+  pub --> talos[Talos _spawn_run receives payload]
+  talos --> render[_render_template fills {{project.X}} / {{task.X}}<br/>in workdir and env values]
+  render --> envAdd[Inject ANTHROPIC_MODEL from project.task_model<br/>if not in env]
+  envAdd --> prompt[_build_prompt fills {{task.X}} into input_format.template<br/>· title · description · acceptance_criteria]
+
+  prompt --> mode{--print or -p<br/>in args?}
+  mode -->|no| writeStdin[input_text held<br/>written to PTY stdin after spawn]
+  mode -->|yes| argv[Append rendered prompt as trailing positional argv<br/>· claude --print prompt is just an arg<br/>· avoids bracketed-paste / TTY-stdin refusal]
+
+  argv --> trust[trust_workdir worktree<br/>· marks the folder trusted in ~/.claude.json<br/>· skips the do-you-trust-this-folder prompt]
+  writeStdin --> trust
+  trust --> spawn[PTYSession.spawn<br/>40×160 PTY · cgroup cpu/mem/pids limits attached]
+  spawn --> stream[_stream_output<br/>· append chunks → transcript_chunks<br/>· XADD pty:&lt;run_id&gt; Redis stream for live tail]
+  stream --> wait[_wait_for_completion poll loop]
+
+  wait --> exit{Done?}
+  exit -->|done_signal regex / tool_call / natural exit| persist[_persist_transcript<br/>· always emits a transcript object key<br/>· synthesises an exit-code header if output was empty]
+  exit -->|wall_clock| killWC[session.kill<br/>talos.wall_clock_exceeded]
+  exit -->|idle_output| killIdle[session.kill<br/>talos.idle_output_exceeded]
+  killWC --> persist
+  killIdle --> persist
+  persist --> complete[SET hermes:completion:&lt;run_id&gt;<br/>release lease]
+`.trim(),
+    },
+    {
+      id: "prompt-pipeline-env",
+      caption: "Non-interactive env hardening (capability-neutral)",
+      chart: `
+flowchart LR
+  agent[Agent or tool the agent invokes] --> stdin{Reads stdin<br/>for confirmation?}
+  stdin -->|"apt install (no -y)"| apt[DEBIAN_FRONTEND=noninteractive<br/>NEEDRESTART_MODE=a]
+  stdin -->|"git commit (no -m)"| editor[EDITOR=true / VISUAL=true<br/>commit becomes no-op instead of opening editor]
+  stdin -->|"git pull · clone (ssh creds)"| git[GIT_TERMINAL_PROMPT=0<br/>GIT_ASKPASS=/bin/echo<br/>SSH_ASKPASS=/bin/echo]
+  stdin -->|"pip · npm · yarn"| pkg[PIP_NO_INPUT=1<br/>NPM_CONFIG_YES=true<br/>CI=true]
+  stdin -->|"git log · man"| pager[PAGER=cat / GIT_PAGER=cat<br/>no alt-screen switch in PTY]
+
+  apt --> ok([tool exits cleanly])
+  editor --> ok
+  git --> ok
+  pkg --> ok
+  pager --> ok
+
+  ok -.-> safety[Backstop: wall_clock_minutes / idle_output_minutes<br/>kill the PTY if anything still hangs]
+`.trim(),
+    },
+  ],
+  notes: [
+    "The connector snapshot is frozen on the run row at enqueue time. Editing a connector after enqueue does NOT change what an in-flight run sees — by design.",
+    "Template is a one-shot user turn under --print. The agent has no opportunity to ask for follow-up input; emitting 'I'd like to ask you…' just exits cleanly and Argus rejects the run.",
+    "The autonomy preamble in the template explicitly tells the agent to decide and proceed when ambiguity hits. Capability-additive, not restrictive.",
+    "PYTHONDONTWRITEBYTECODE=1 in env stops Python from creating .pyc files at all — the worktree's .gitignore covers the rest. Together they make 'agent committed only compiled artefacts' structurally impossible.",
+    "trust_workdir is no-op when command basename != 'claude'. Other connectors (codex, qwen, shell-demo) skip it.",
+  ],
+};
+
+const ALGORITHMS: Algo[] = [RUN_ALL, PROJECT_LEASE, PYTHIA, LIVE_RUNNER, GIT_GUARD, PROMPT_PIPELINE];
 
 // ── Page ───────────────────────────────────────────────────────────────────
 

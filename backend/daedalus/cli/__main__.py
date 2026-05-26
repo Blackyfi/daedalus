@@ -371,5 +371,110 @@ async def _reset_totp(*, email: str, regen_recovery: bool, assume_yes: bool) -> 
     click.echo("All active sessions for this user have been revoked.")
 
 
+@cli.command("reverify-stuck-tasks")
+@click.option("--project", "project_name", required=True, help="Project name to scan.")
+@click.option("--dry-run/--apply", default=True, help="Print verdicts without writing to DB.")
+def reverify_stuck_tasks(project_name: str, dry_run: bool) -> None:
+    """Re-run Argus on tasks stuck at needs_fixes whose latest task run produced
+    no diff but did emit a final report. Uses the new transcript-aware verifier."""
+    asyncio.run(_reverify_stuck_tasks(project_name=project_name, dry_run=dry_run))
+
+
+async def _reverify_stuck_tasks(*, project_name: str, dry_run: bool) -> None:
+    from daedalus.argus import verify_run as argus_verify_run
+    from daedalus.argus.verifier import extract_agent_final_text
+    from daedalus.db.models import ArgusReport, Project, Run, RunKind, Task, TaskStatus, Verdict
+    from daedalus.storage.objects import get_object_store
+
+    verdict_map = {"pass": Verdict.pass_, "partial": Verdict.partial, "fail": Verdict.fail}
+
+    async for db in get_session():
+        proj_res = await db.execute(select(Project).where(Project.name == project_name))
+        project = proj_res.scalar_one_or_none()
+        if project is None:
+            click.echo(f"Project not found: {project_name}", err=True)
+            raise SystemExit(1)
+
+        tasks_res = await db.execute(
+            select(Task).where(
+                Task.project_id == project.id, Task.status == TaskStatus.needs_fixes
+            )
+        )
+        tasks = list(tasks_res.scalars())
+        click.echo(f"Found {len(tasks)} task(s) at needs_fixes in {project_name}")
+
+        for task in tasks:
+            run_res = await db.execute(
+                select(Run)
+                .where(Run.task_id == task.id, Run.kind == RunKind.task)
+                .order_by(Run.created_at.desc())
+                .limit(1)
+            )
+            task_run = run_res.scalar_one_or_none()
+            if task_run is None or not task_run.transcript_object_key:
+                click.echo(f"  SKIP {task.id} — no task run with transcript")
+                continue
+            try:
+                transcript = get_object_store().get_text(task_run.transcript_object_key)
+            except Exception as exc:
+                click.echo(f"  SKIP {task.id} — transcript fetch failed: {exc}")
+                continue
+            agent_final_text = extract_agent_final_text(transcript)
+            if not agent_final_text.strip():
+                click.echo(f"  SKIP {task.id} — no final report extracted")
+                continue
+
+            connector_spec = task_run.connector_snapshot or {}
+            verify_commands = connector_spec.get("verify_commands") or []
+
+            argus_result = await argus_verify_run(
+                task_title=task.title,
+                task_description=task.description,
+                acceptance_criteria=task.acceptance_criteria,
+                verify_commands=list(verify_commands),
+                diff_text="",
+                verify_output="",
+                verify_exit_code=0,
+                verifier_model=project.verifier_model,
+                agent_final_text=agent_final_text,
+            )
+            verdict_enum = verdict_map.get(argus_result.verdict, Verdict.fail)
+            click.echo(f"  {task.id} :: {argus_result.verdict.upper()} :: {task.title[:60]}")
+            click.echo(f"    summary: {argus_result.summary[:200]}")
+
+            if dry_run:
+                continue
+
+            existing = await db.execute(
+                select(ArgusReport).where(ArgusReport.run_id == task_run.id)
+            )
+            report = existing.scalar_one_or_none()
+            if report is None:
+                report = ArgusReport(
+                    run_id=task_run.id,
+                    task_id=task.id,
+                    verdict=verdict_enum,
+                    summary=argus_result.summary,
+                    findings=argus_result.findings,
+                    suggested_fix_task=argus_result.suggested_fix_task,
+                )
+                db.add(report)
+            else:
+                report.verdict = verdict_enum
+                report.summary = argus_result.summary
+                report.findings = argus_result.findings
+                report.suggested_fix_task = argus_result.suggested_fix_task
+
+            if verdict_enum == Verdict.pass_:
+                task.status = TaskStatus.done
+
+        if not dry_run:
+            await db.commit()
+            click.echo("Committed.")
+        else:
+            click.echo("(dry-run — nothing written)")
+        break
+
+
 if __name__ == "__main__":
     cli()

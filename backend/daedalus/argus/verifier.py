@@ -8,6 +8,8 @@ shell `verify_commands` are still run by Talos (Hephaestus role); this module
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import shlex
 from dataclasses import dataclass, field
 from typing import Any
@@ -21,6 +23,20 @@ from daedalus.llm.client import ChatMessage
 log = structlog.get_logger()
 
 
+class WorktreeUnreadable(Exception):
+    """Raised when the verifier process can't read a run worktree.
+
+    This is an *infrastructure* problem (e.g., the workspaces volume isn't
+    mounted into the container running this code, or the worktree was deleted
+    out from under us). It is NOT a verdict on the agent's work — callers
+    must treat it as "retry once the operator has fixed the infra", never as
+    a fail/partial verdict against the task. We had a long stretch where this
+    failure mode was silently swallowed and every code-change task was
+    falsely marked needs_fixes; the typed exception is here so the silence
+    can never come back.
+    """
+
+
 @dataclass
 class ArgusVerdict:
     verdict: str  # "pass" | "partial" | "fail"
@@ -32,9 +48,9 @@ class ArgusVerdict:
 
 _SYSTEM_PROMPT = """\
 You are Argus, an automated verifier for an autonomous coding agent platform.
-Your job is to decide whether a task was actually completed by inspecting the
-git diff produced and the output of verification commands (tests, linters,
-builds).
+Your job is to decide whether a task was actually completed by inspecting (a)
+the git diff produced, (b) the output of verification commands, and — when
+present — (c) the agent's own final report from its run transcript.
 
 You always reply with a single JSON object — no prose, no code fences — of
 this exact shape:
@@ -58,10 +74,16 @@ this exact shape:
 }
 
 Rules:
-- "pass" only if every acceptance criterion is satisfied AND every verify
-  command exited 0 AND the diff is consistent with the task.
+- "pass" if every acceptance criterion is satisfied AND every verify command
+  exited 0. Code-change tasks must also show a diff consistent with the task.
+- For analytical tasks (review / audit / static analysis / "verify that…"
+  with no required code change), an empty diff is acceptable WHEN the agent's
+  final report substantively addresses every acceptance criterion with
+  concrete evidence (file paths, line numbers, command output, decisions).
+  In that case the report itself is the deliverable.
 - "fail" if no meaningful work was done OR a verify command failed in a way
-  that blocks all acceptance criteria.
+  that blocks all acceptance criteria OR (for an analytical task) the report
+  is missing, generic, or skips acceptance criteria.
 - "partial" otherwise.
 - "suggested_fix_task" must be null when verdict is "pass".
 """
@@ -77,13 +99,26 @@ async def verify_run(
     verify_output: str,
     verify_exit_code: int | None,
     verifier_model: str | None = None,
+    agent_final_text: str = "",
 ) -> ArgusVerdict:
     """Ask the LLM to verify a task. Falls back to a deterministic verdict
-    on LLM error so the platform keeps making progress."""
+    on LLM error so the platform keeps making progress.
+
+    `agent_final_text` is the agent's own final report extracted from its
+    run transcript; supplied by the scheduler when the diff is empty so the
+    verifier can judge analytical (review/audit) tasks fairly.
+    """
     settings = get_settings()
     diff_excerpt = _truncate(diff_text, settings.llm_max_diff_chars)
     output_excerpt = _truncate(verify_output, settings.llm_max_log_chars)
+    report_excerpt = _truncate(agent_final_text, settings.llm_max_log_chars)
     verify_block = "\n".join(f"  $ {cmd}" for cmd in verify_commands) or "  (none configured)"
+
+    report_section = (
+        f"--- Agent's final report from transcript (truncated) ---\n"
+        f"{report_excerpt}\n"
+        f"--- end report ---\n\n"
+    ) if report_excerpt else ""
 
     user_prompt = f"""\
 Task title: {task_title}
@@ -107,7 +142,7 @@ Verify command exit code: {verify_exit_code if verify_exit_code is not None else
 {diff_excerpt or '(no diff)'}
 --- end diff ---
 
-Reply with the JSON verdict now.
+{report_section}Reply with the JSON verdict now.
 """
 
     client = get_llm_client()
@@ -159,12 +194,89 @@ Reply with the JSON verdict now.
     )
 
 
+def extract_agent_final_text(transcript: str) -> str:
+    """Pull the agent's final summary out of a Claude Code stream-json
+    transcript. The CLI writes one JSON object per line; the last one with
+    type=result carries the cleaned final assistant text. Falls back to
+    concatenating any `text` content blocks if no result envelope is found.
+
+    Returns an empty string if the transcript is empty, non-JSON, or carries
+    no usable text — callers should treat that as "no report available".
+    """
+    if not transcript:
+        return ""
+    last_result_text = ""
+    text_blocks: list[str] = []
+    for line in transcript.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        t = obj.get("type")
+        if t == "result":
+            r = obj.get("result")
+            if isinstance(r, str) and r.strip():
+                last_result_text = r
+        elif t == "assistant":
+            msg = obj.get("message") or {}
+            for block in msg.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    txt = block.get("text") or ""
+                    if isinstance(txt, str) and txt.strip():
+                        text_blocks.append(txt)
+    if last_result_text:
+        return last_result_text
+    return "\n\n".join(text_blocks[-3:])  # last few text blocks at most
+
+
 async def collect_diff(worktree_path: str, default_branch: str) -> str:
-    """`git diff <default_branch>...HEAD` from the run's worktree."""
+    """`git diff <default_branch>...HEAD` from the run's worktree.
+
+    Raises WorktreeUnreadable when the path doesn't exist or isn't a git
+    worktree from this process's perspective. This separates "the agent
+    produced no diff" (return "") from "this process can't see the
+    workspace" (raise) — the latter must NEVER be reported to the LLM
+    verifier as an empty diff, because that's the behaviour that produced
+    the long phantom-commit-fail cascade.
+    """
     if not worktree_path:
         return ""
+    if not os.path.isdir(worktree_path):
+        raise WorktreeUnreadable(f"worktree path missing: {worktree_path}")
+    try:
+        probe = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", "--is-inside-work-tree",
+            cwd=worktree_path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, perr = await probe.communicate()
+        if probe.returncode != 0:
+            raise WorktreeUnreadable(
+                f"not a git worktree at {worktree_path}: "
+                f"{perr.decode(errors='replace').strip()[:200]}"
+            )
+    except FileNotFoundError as exc:
+        raise WorktreeUnreadable(f"cannot exec git: {exc}") from exc
+    # Exclude common compiled / vendored / cache artefacts via git pathspecs.
+    # A diff that contains only e.g. .pyc files is functionally empty work —
+    # we want Argus to grade the agent on real code, not bytecode noise. See
+    # task 5256b444 in the needs_fixes audit.
+    diff_excludes = [
+        ":(exclude,glob)**/__pycache__/**",
+        ":(exclude,glob)**/*.pyc",
+        ":(exclude,glob)**/*.pyo",
+        ":(exclude,glob)**/node_modules/**",
+        ":(exclude,glob)**/.git/**",
+        ":(exclude,glob)**/*.class",
+    ]
     proc = await asyncio.create_subprocess_exec(
-        "git", "diff", f"{default_branch}...HEAD", "--no-color",
+        "git", "diff", f"{default_branch}...HEAD", "--no-color", "--",
+        ".",
+        *diff_excludes,
         cwd=worktree_path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

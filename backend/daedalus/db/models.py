@@ -89,19 +89,6 @@ class PlanProposalStatus(str, enum.Enum):
     discarded = "discarded"
 
 
-class ProjectIdeaStatus(str, enum.Enum):
-    """Lifecycle for a *project* idea (one tier above a task idea).
-
-    `new` is the default; `promoted` is set once the idea has been
-    converted into a real `Project` row; `archived` is a manual
-    "set aside" without promoting.
-    """
-
-    new = "new"
-    promoted = "promoted"
-    archived = "archived"
-
-
 class MergeBatchState(str, enum.Enum):
     pending = "pending"
     merging_clean = "merging_clean"
@@ -111,19 +98,6 @@ class MergeBatchState(str, enum.Enum):
     shipped = "shipped"
     failed = "failed"
     aborted = "aborted"
-
-
-# Subset of MergeBatchState that means "this batch still owns its tasks".
-# A task in any of these states is considered claimed; creating a new batch
-# over the same task must be rejected (or short-circuit to the existing
-# batch). Terminal states (shipped/failed/aborted) release the claim.
-OPEN_MERGE_BATCH_STATES: tuple[MergeBatchState, ...] = (
-    MergeBatchState.pending,
-    MergeBatchState.merging_clean,
-    MergeBatchState.awaiting_review,
-    MergeBatchState.resolving,
-    MergeBatchState.shipping,
-)
 
 
 class MergeItemState(str, enum.Enum):
@@ -175,44 +149,6 @@ class User(Base, TimestampMixin):
     webauthn_credentials: Mapped[list[WebAuthnCredential]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
-    notification_pref: Mapped[UserNotificationPref | None] = relationship(
-        back_populates="user", cascade="all, delete-orphan", uselist=False
-    )
-
-
-# --- notification preferences -------------------------------------------
-
-class UserNotificationPref(Base, TimestampMixin):
-    """Per-user channel toggles for each `NotificationKind`.
-
-    A missing row is treated as all-on with no usage cap (see
-    `daedalus.notifications.dispatcher._default_pref`). The mirrored
-    `<channel>_<kind>` columns let the dispatcher resolve a single
-    `getattr` per (kind, channel) instead of joining a child table.
-    """
-
-    __tablename__ = "user_notification_prefs"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
-    )
-
-    email_task_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    email_task_failed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    email_task_needs_fixes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    email_usage_threshold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
-    in_app_task_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    in_app_task_failed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    in_app_task_needs_fixes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    in_app_usage_threshold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
-    # Project cumulative `cost_usd_micros` ceiling that triggers a single
-    # `usage_threshold` notification per crossing. NULL disables the gate.
-    usage_threshold_micros: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-
-    user: Mapped[User] = relationship(back_populates="notification_pref")
 
 
 # --- webauthn ------------------------------------------------------------
@@ -289,32 +225,6 @@ class Project(Base, TimestampMixin):
     argus_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Per-project ceiling on wall-clock minutes; NULL → use the connector's value.
     wall_clock_minutes_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Auto-run quiet hours (hour-of-day, 0-23 in server local time). When both
-    # start and end are non-null, the scheduler skips automatic re-queue inside
-    # [start, end). Wrap-around (e.g. 22→6) is supported. NULL on either side
-    # disables the gate.
-    auto_run_quiet_hours_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    auto_run_quiet_hours_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Maximum auto-runs per UTC day. 0 = unlimited (legacy behaviour).
-    auto_run_daily_cap: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    # Max simultaneous auto-launched runs for this project. 0 = unlimited.
-    auto_run_concurrency_cap: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    # Max auto-launched runs in a rolling 1-hour window. 0 = unlimited.
-    auto_run_hourly_cap: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    # Connector IDs the auto-runner is allowed to use. Empty list = all enabled
-    # connectors are allowed (legacy behaviour). When non-empty the scheduler
-    # restricts auto-runs to tasks whose effective connector is in this list.
-    auto_run_allowed_connectors: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), default=list, server_default="{}", nullable=False
-    )
-    # Task statuses the auto-runner is allowed to pick up. Subset of
-    # TaskStatus values. Default matches the legacy hard-coded scheduler list.
-    auto_run_eligible_statuses: Mapped[list[str]] = mapped_column(
-        ARRAY(Text),
-        default=lambda: ["backlog", "ready", "needs_fixes"],
-        server_default="{backlog,ready,needs_fixes}",
-        nullable=False,
-    )
 
     owner: Mapped[User] = relationship(back_populates="projects")
     tasks: Mapped[list[Task]] = relationship(back_populates="project", cascade="all, delete-orphan")
@@ -355,6 +265,32 @@ class Task(Base, TimestampMixin):
     runs: Mapped[list[Run]] = relationship(back_populates="task", cascade="all, delete-orphan")
 
 
+class TaskStatusEvent(Base):
+    """One row per task status transition. Powers the KPI time-series.
+
+    `from_status` is NULL for the creation event. `project_id` is denormalised
+    so per-project queries don't need a join on tasks (the task may already be
+    deleted by the time we read history, but ON DELETE CASCADE on task_id
+    means events disappear with their task — kept that way deliberately so
+    archived/deleted task counts don't pollute KPIs).
+    """
+
+    __tablename__ = "task_status_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_status: Mapped[TaskStatus | None] = mapped_column(Enum(TaskStatus), nullable=True)
+    to_status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), nullable=False)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
 # --- ideas / notes -------------------------------------------------------
 
 class Idea(Base, TimestampMixin):
@@ -379,34 +315,6 @@ class Note(Base, TimestampMixin):
     body: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
     project: Mapped[Project] = relationship(back_populates="notes")
-
-
-class ProjectIdea(Base, TimestampMixin):
-    """A "future project" idea — distinct from `Idea`, which is per-project.
-
-    Lives on the Projects landing page. Promotion creates a real
-    `Project` row and links it via `promoted_project_id`, flipping
-    `status` to `promoted`.
-    """
-
-    __tablename__ = "project_ideas"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    owner_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    tags: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, nullable=False)
-    status: Mapped[ProjectIdeaStatus] = mapped_column(
-        Enum(ProjectIdeaStatus, name="project_idea_status"),
-        default=ProjectIdeaStatus.new,
-        nullable=False,
-        index=True,
-    )
-    promoted_project_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
-    )
-    sort_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 # --- runs / argus reports ------------------------------------------------
@@ -444,6 +352,12 @@ class Run(Base, TimestampMixin):
     retry_of: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("runs.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # True iff Talos detected a Claude rate-limit (`rate_limit_event` with
+    # status="rejected") in this run's transcript. The connector is then
+    # paused via Redis until `retry_after`, the parent task is reset to
+    # `ready` rather than `needs_fixes`, and no fix-loop is spawned.
+    was_rate_limited: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     task: Mapped[Task | None] = relationship(back_populates="runs")
     argus_report: Mapped[ArgusReport | None] = relationship(
@@ -461,7 +375,10 @@ class ArgusReport(Base, TimestampMixin):
     task_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    verdict: Mapped[Verdict] = mapped_column(Enum(Verdict, name="verdict"), nullable=False)
+    verdict: Mapped[Verdict] = mapped_column(
+        Enum(Verdict, name="verdict", values_callable=lambda enum: [e.value for e in enum]),
+        nullable=False,
+    )
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
     findings: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, nullable=False)
     suggested_fix_task: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
@@ -496,66 +413,6 @@ class PlanProposal(Base, TimestampMixin):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-# --- merge batches ------------------------------------------------------
-
-class MergeBatch(Base, TimestampMixin):
-    __tablename__ = "merge_batches"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-    integration_branch: Mapped[str] = mapped_column(Text, nullable=False)
-    integration_worktree: Mapped[str] = mapped_column(Text, nullable=False)
-    state: Mapped[MergeBatchState] = mapped_column(
-        Enum(MergeBatchState, name="merge_batch_state"),
-        nullable=False,
-        default=MergeBatchState.pending,
-    )
-    verify_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    verify_output: Mapped[str | None] = mapped_column(Text, nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    require_argus_pass: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class MergeBatchItem(Base, TimestampMixin):
-    __tablename__ = "merge_batch_items"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    batch_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("merge_batches.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    task_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
-    )
-    source_run_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
-    )
-    resolution_task_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
-    )
-    resolution_run_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
-    )
-    branch: Mapped[str] = mapped_column(Text, nullable=False)
-    category: Mapped[MergeItemCategory] = mapped_column(
-        Enum(MergeItemCategory, name="merge_item_category"), nullable=False
-    )
-    state: Mapped[MergeItemState] = mapped_column(
-        Enum(MergeItemState, name="merge_item_state"),
-        nullable=False,
-        default=MergeItemState.pending,
-    )
-    conflicting_files: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    commits_ahead: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    files_changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-
 # --- snapshots (pre-yolo workspace tarballs / git tags) -----------------
 
 class Snapshot(Base, TimestampMixin):
@@ -584,38 +441,22 @@ class Connector(Base, TimestampMixin):
     schema_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
-
-# --- auto-run defaults (global / org-wide) -------------------------------
-
-class AutoRunDefaults(Base, TimestampMixin):
-    """Org-wide default auto-run policy.
-
-    Modelled as a singleton row keyed by ``id=1`` so the operator UI can
-    `GET`/`PATCH` it without picking an instance. Per-project rows on the
-    `projects` table override these values; this row is the fallback the
-    Account/admin page surfaces, and the suggested starting point for new
-    projects.
-    """
-
-    __tablename__ = "auto_run_defaults"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    max_fix_loops: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
-    daily_cap: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    hourly_cap: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    concurrency_cap: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    quiet_hours_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    quiet_hours_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    eligible_statuses: Mapped[list[str]] = mapped_column(
-        ARRAY(Text),
-        default=lambda: ["backlog", "ready", "needs_fixes"],
-        server_default="{backlog,ready,needs_fixes}",
-        nullable=False,
+    # Operator-controlled emergency override: when force_project_overrides is
+    # True, every project using this connector gets the override_* values
+    # injected in place of its own model/limit settings. Used to globally
+    # swap models (e.g. Opus → Sonnet during a usage cap) without editing
+    # each project individually. Each override_* is independently nullable
+    # so operators can override only some fields and leave the rest to the
+    # project. Has no effect when force_project_overrides is False.
+    force_project_overrides: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
     )
-    allowed_connectors: Mapped[list[str]] = mapped_column(
-        ARRAY(Text), default=list, server_default="{}", nullable=False
-    )
+    override_planning_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    override_task_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    override_verifier_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    override_wall_clock_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    override_argus_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    override_max_fix_loops: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 # --- audit log -----------------------------------------------------------
@@ -636,3 +477,72 @@ class AuditEvent(Base):
     target_kind: Mapped[str | None] = mapped_column(String(40), nullable=True)
     target_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+# --- merge batches -------------------------------------------------------
+
+_enum_kw = dict(values_callable=lambda enum: [e.value for e in enum], create_type=False)
+
+
+class MergeBatch(Base, TimestampMixin):
+    __tablename__ = "merge_batches"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    integration_branch: Mapped[str] = mapped_column(Text, nullable=False)
+    integration_worktree: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[MergeBatchState] = mapped_column(
+        Enum(MergeBatchState, name="merge_batch_state", **_enum_kw),
+        nullable=False,
+        default=MergeBatchState.pending,
+    )
+    verify_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verify_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    require_argus_pass: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    items: Mapped[list["MergeBatchItem"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+
+
+class MergeBatchItem(Base, TimestampMixin):
+    __tablename__ = "merge_batch_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("merge_batches.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
+    )
+    resolution_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    resolution_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
+    )
+    branch: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[MergeItemCategory] = mapped_column(
+        Enum(MergeItemCategory, name="merge_item_category", **_enum_kw), nullable=False
+    )
+    state: Mapped[MergeItemState] = mapped_column(
+        Enum(MergeItemState, name="merge_item_state", **_enum_kw),
+        nullable=False,
+        default=MergeItemState.pending,
+    )
+    conflicting_files: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    commits_ahead: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    files_changed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    batch: Mapped[MergeBatch] = relationship(back_populates="items")

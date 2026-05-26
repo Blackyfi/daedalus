@@ -61,11 +61,11 @@ function PlanCard({ plan, projectId }: { plan: PlanProposal; projectId: string }
 
   return (
     <article className="rounded border border-border bg-panel2 p-3">
-      <header className="mb-2 flex items-center justify-between">
+      <header className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <span className="text-xs text-muted">
           Drafted {new Date(plan.created_at).toLocaleString()} · {tasks.length} task(s)
         </span>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <button
             className="btn btn-primary"
             onClick={() => confirm.mutate({ proposed_tasks: tasks, archive_source_ideas: true })}
@@ -88,9 +88,9 @@ function PlanCard({ plan, projectId }: { plan: PlanProposal; projectId: string }
       <div className="space-y-2">
         {tasks.map((task, i) => (
           <div key={i} className="rounded border border-border bg-panel p-2">
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
               <input
-                className="field col-span-3"
+                className="field sm:col-span-3"
                 value={task.title}
                 onChange={(e) => update(i, { title: e.target.value })}
                 placeholder="Title"
@@ -108,26 +108,30 @@ function PlanCard({ plan, projectId }: { plan: PlanProposal; projectId: string }
                 <option>P3</option>
               </select>
               <textarea
-                className="field col-span-4"
+                className="field sm:col-span-4"
                 rows={2}
                 value={task.description || ""}
                 onChange={(e) => update(i, { description: e.target.value })}
                 placeholder="Description"
               />
               <textarea
-                className="field col-span-4"
+                className="field sm:col-span-4"
                 rows={2}
                 value={task.acceptance_criteria || ""}
                 onChange={(e) => update(i, { acceptance_criteria: e.target.value })}
                 placeholder="Acceptance criteria"
               />
               <input
-                className="field col-span-3"
+                className="field sm:col-span-3"
                 value={task.suggested_connector || ""}
                 onChange={(e) => update(i, { suggested_connector: e.target.value })}
                 placeholder="Suggested connector (or empty for project default)"
               />
-              <button className="btn" onClick={() => removeTask(i)} type="button">
+              <button
+                className="btn w-full justify-center sm:col-span-1 sm:w-auto"
+                onClick={() => removeTask(i)}
+                type="button"
+              >
                 Remove
               </button>
             </div>

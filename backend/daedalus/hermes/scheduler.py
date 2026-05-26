@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -25,7 +26,13 @@ import structlog
 from sqlalchemy import select
 
 from daedalus.argus import verify_run as argus_verify_run
-from daedalus.argus.verifier import collect_diff
+from daedalus.connectors.overrides import resolve as resolve_effective_settings
+from daedalus.argus.verifier import (
+    ArgusVerdict,
+    WorktreeUnreadable,
+    collect_diff,
+    extract_agent_final_text,
+)
 from daedalus.core.settings import get_settings
 from daedalus.observability import (
     ARGUS_VERDICTS_TOTAL,
@@ -58,8 +65,6 @@ from daedalus.hermes.leases import (
     release_lease,
     try_claim,
 )
-from daedalus.notifications import NotificationEvent, NotificationKind, notify
-from daedalus.notifications.usage_monitor import maybe_notify_usage_threshold
 from daedalus.storage.objects import get_object_store
 
 logger = structlog.get_logger()
@@ -69,6 +74,15 @@ logger = structlog.get_logger()
 # Per-run lock TTL (seconds). Used as a fallback safety net on top of the
 # project lease — see _claim_run / orphan reclaim.
 _LOCK_TTL_RUNNING = 90
+
+# Match SHA-like identifiers an agent's final report claims as commits — e.g.
+# "commit bb3bb18", "committed afd53f3", "Commit: ea32b4e1234". Used by the
+# phantom-commit guard to short-circuit Argus when the diff is empty AND the
+# agent fabricated a commit hash that doesn't resolve in the worktree.
+_AGENT_COMMIT_CLAIM_RE = re.compile(
+    r"\b(?:commit(?:ted)?)\b[\s:#]*([a-f0-9]{7,40})\b",
+    re.IGNORECASE,
+)
 
 # Lane priority order — check urgent first, then default, then bg.
 _LANE_ORDER = (PriorityLane.urgent, PriorityLane.default, PriorityLane.bg)
@@ -92,6 +106,36 @@ def _connector_wall_clock_minutes(connector_spec: dict[str, Any] | None) -> int:
         return 60
 
 
+async def _connector_row_for_run(
+    session,
+    *,
+    run: Run | None = None,
+    task: Task | None = None,
+    project: Project | None = None,
+) -> Connector | None:
+    """Resolve the live Connector row that governs a run/task/project.
+
+    Looks at the run's snapshot id first, then the task's connector_id, then
+    the project's default_connector_id. Returns None if no connector is
+    associated. Used by the override-resolution path so we read the *current*
+    force/override state, not what was frozen into the snapshot at run-create
+    time.
+    """
+    cid: str | None = None
+    if run is not None:
+        snap = run.connector_snapshot or {}
+        if isinstance(snap, dict):
+            cid = snap.get("id")
+    if not cid and task is not None:
+        cid = task.connector_id
+    if not cid and project is not None:
+        cid = project.default_connector_id
+    if not cid:
+        return None
+    res = await session.execute(select(Connector).where(Connector.connector_id == cid))
+    return res.scalar_one_or_none()
+
+
 class HermesScheduler:
     """Multi-worker scheduler with per-project concurrency.
 
@@ -104,6 +148,9 @@ class HermesScheduler:
         self.settings = get_settings()
         self.redis = get_redis()
         self._stopping = False
+        # Throttles low-frequency bookkeeper subtasks (worktree prune etc.).
+        # Keyed by subtask name, value is monotonic-time of last successful run.
+        self._last_periodic: dict[str, float] = {}
 
     async def run(self) -> None:
         logger.info(
@@ -155,7 +202,8 @@ class HermesScheduler:
                 await release_lease(project_id)
 
     async def _bookkeeper_loop(self) -> None:
-        """Periodic housekeeping: orphan reclaim + queue-depth metrics."""
+        """Periodic housekeeping: orphan reclaim + queue-depth metrics +
+        low-frequency hygiene like git-worktree pruning."""
         while not self._stopping:
             try:
                 await self._reclaim_orphans()
@@ -163,9 +211,64 @@ class HermesScheduler:
                     QUEUE_DEPTH.labels(lane=lane.value).set(
                         int(await self.redis.llen(f"{_QUEUE_PREFIX}:{lane.value}"))
                     )
+                # Low-frequency hygiene. Each subtask is throttled internally
+                # so we can call it from the every-5s loop without amplifying.
+                await self._maybe_prune_worktrees()
             except Exception:
                 logger.exception("bookkeeper_tick_failed")
             await asyncio.sleep(5)
+
+    async def _maybe_prune_worktrees(self) -> None:
+        """Run `git worktree prune` once per project, every ~5 minutes.
+
+        Talos creates a worktree per task run but doesn't always tear them
+        down (failed/aborted runs leave orphans; successful runs are kept
+        until the merge ship cleans them up). The physical dirs eventually
+        get removed by ship.py or operator cleanup, but git's
+        `.git/worktrees/<id>/` admin entries linger as `prunable` until
+        somebody runs `git worktree prune`. Doing it from a single place
+        on a fixed cadence prevents that admin set from growing unbounded.
+        """
+        interval = float(self.settings.worktree_prune_interval_seconds)
+        last = self._last_periodic.get("worktree_prune", 0.0)
+        now = time.monotonic()
+        if now - last < interval:
+            return
+        # Optimistically mark "ran" so a failure here doesn't make us spin
+        # at the every-5s cadence retrying. Worst case we miss a prune
+        # cycle; the next one will catch any orphans.
+        self._last_periodic["worktree_prune"] = now
+
+        async for session in get_session():
+            res = await session.execute(select(Project.workspace_path))
+            paths = [p for (p,) in res.all() if p]
+            break
+        else:
+            return
+
+        pruned = 0
+        for ws in paths:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "worktree", "prune",
+                    cwd=ws,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+                if proc.returncode == 0:
+                    pruned += 1
+                else:
+                    logger.warning(
+                        "worktree_prune_failed",
+                        workspace=ws,
+                        rc=proc.returncode,
+                        stderr=err.decode(errors="replace").strip()[:200],
+                    )
+            except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
+                logger.warning("worktree_prune_exec_error", workspace=ws, error=str(exc))
+        if pruned:
+            logger.info("worktree_prune_complete", projects=pruned)
 
     # ── orphan recovery ───────────────────────────────────────────────────
 
@@ -180,32 +283,139 @@ class HermesScheduler:
                 from the active-set so the cap reflects reality.
         """
         live_run_ids: set[str] = set()
+        recovered: list[tuple[uuid.UUID, uuid.UUID, str]] = []
         try:
             async for session in get_session():
+                client = HermesClient(session)
                 res = await session.execute(
                     select(Run).where(
                         Run.state.in_((RunState.running, RunState.claimed))
                     )
                 )
                 stale = []
+                completed_via_orphan = []  # runs whose Talos finished cleanly
                 for run in res.scalars().all():
                     lock_key = f"hermes:lock:{run.id}"
                     ttl = await self.redis.ttl(lock_key)
-                    if ttl == -2:
-                        run.state = RunState.aborted_unsafe
-                        run.finished_at = datetime.now(timezone.utc)
-                        run.exit_code = -1
-                        stale.append(run)
-                    else:
+                    if ttl != -2:
                         live_run_ids.add(str(run.id))
-                if stale:
-                    await session.commit()
+                        continue
+                    # Lock is gone. Two sub-cases:
+                    #  (a) Talos finished cleanly and dropped the lock; if
+                    #      _handle_run hasn't committed yet, leave it alone
+                    #      for one bookkeeper tick (≤5s). If it persists past
+                    #      that, the wait-loop is gone (Hermes restarted) —
+                    #      consume the completion ourselves.
+                    #  (b) No completion key → truly stranded; reclaim as
+                    #      aborted_unsafe.
+                    completion_key = f"hermes:completion:{run.id}"
+                    raw = await self.redis.get(completion_key)
+                    if raw is not None:
+                        # Has the run row been "running" for long enough that
+                        # we're confident no in-process wait-loop will pick it
+                        # up? Use started_at + 30s as the lower bound; that's
+                        # ~6 bookkeeper ticks of grace.
+                        started = run.started_at
+                        if started is not None and (
+                            datetime.now(timezone.utc) - started
+                        ).total_seconds() < 30:
+                            live_run_ids.add(str(run.id))
+                            continue
+                        try:
+                            if isinstance(raw, bytes):
+                                raw = raw.decode("utf-8")
+                            data = json.loads(raw)
+                        except Exception:
+                            data = {}
+                        state_map = {
+                            "completed": RunState.completed,
+                            "failed": RunState.failed,
+                            "cancelled": RunState.cancelled,
+                            "aborted_unsafe": RunState.aborted_unsafe,
+                        }
+                        run.state = state_map.get(
+                            data.get("state", "completed"), RunState.completed
+                        )
+                        run.exit_code = data.get("exit_code")
+                        run.finished_at = datetime.now(timezone.utc)
+                        run.transcript_object_key = data.get("transcript_object_key")
+                        if data.get("token_input") is not None:
+                            run.token_input = int(data["token_input"])
+                        if data.get("token_output") is not None:
+                            run.token_output = int(data["token_output"])
+                        if data.get("cost_usd_micros") is not None:
+                            run.cost_usd_micros = int(data["cost_usd_micros"])
+                        completed_via_orphan.append(run)
+                        # Best-effort: drop the completion key now that we've
+                        # consumed it, so a subsequent tick doesn't re-run
+                        # postprocess.
+                        try:
+                            await self.redis.delete(completion_key)
+                        except Exception:
+                            pass
+                        continue
+                    run.state = RunState.aborted_unsafe
+                    run.finished_at = datetime.now(timezone.utc)
+                    run.exit_code = -1
+                    stale.append(run)
+                if stale or completed_via_orphan:
+                    # Mirror the non-completed path of _handle_run for fully-
+                    # stranded runs: flip the parent task to needs_fixes.
+                    # Skip _postprocess_terminal_run for argus-kind stranded
+                    # runs because that path would call the verifier model
+                    # against an empty transcript — needs_fixes is right.
                     for run in stale:
-                        logger.warning(
-                            "orphan_recovered", run_id=str(run.id)
+                        if run.task_id is not None:
+                            task = await session.get(Task, run.task_id)
+                            if task is not None and task.status not in (
+                                TaskStatus.done,
+                                TaskStatus.cancelled,
+                            ):
+                                task.status = TaskStatus.needs_fixes
+                    # For runs whose completion we just consumed (Talos
+                    # finished, but the wait-loop is gone), run the full
+                    # post-processing — this advances the task to done /
+                    # needs_fixes / verifying and unblocks dependents.
+                    for run in completed_via_orphan:
+                        try:
+                            await self._postprocess_terminal_run(session, client, run)
+                        except Exception:
+                            logger.exception(
+                                "orphan_postprocess_failed", run_id=str(run.id)
+                            )
+                    await session.commit()
+                    for run in stale + completed_via_orphan:
+                        recovered.append((run.id, run.project_id, run.state.value))
+                    for run in stale:
+                        logger.warning("orphan_recovered", run_id=str(run.id))
+                    for run in completed_via_orphan:
+                        logger.info(
+                            "orphan_completion_consumed",
+                            run_id=str(run.id),
+                            state=run.state.value,
                         )
                 else:
                     await session.rollback()
+                # Publish completion events so subscribers (Iris → frontend)
+                # see the state transition without waiting on poll fallback.
+                for run_id, project_id, state in recovered:
+                    try:
+                        await client.publish_project_event(
+                            project_id,
+                            {
+                                "kind": "run.completed",
+                                "run_id": str(run_id),
+                                "state": state,
+                                "exit_code": -1,
+                            },
+                        )
+                        await client.publish_queue_event(
+                            {"kind": "completed", "run_id": str(run_id), "state": state}
+                        )
+                    except Exception:
+                        logger.exception(
+                            "orphan_recovery_publish_failed", run_id=str(run_id)
+                        )
                 break
         except Exception:
             logger.exception("orphan_recovery_failed")
@@ -253,6 +463,15 @@ class HermesScheduler:
                     continue
 
                 connector_spec = await self._connector_spec_for_run(run_id)
+                # Skip if this run's connector is paused due to a recent
+                # rate-limit hit. The Redis key has TTL = seconds-until-
+                # reset; once it expires we naturally pick the run up on
+                # a subsequent worker-loop tick.
+                connector_id = (
+                    connector_spec.get("id") if isinstance(connector_spec, dict) else None
+                )
+                if connector_id and await self._is_connector_paused(connector_id):
+                    continue
                 wall_clock_minutes = _connector_wall_clock_minutes(connector_spec)
                 lease_ttl = wall_clock_minutes * 60 + self.settings.project_lease_grace_seconds
 
@@ -332,8 +551,14 @@ class HermesScheduler:
                         task.status = TaskStatus.in_progress
 
                 # Per-run lock — used by orphan reclaim to find stranded rows.
+                # The value encodes the run kind so a Talos process restarting
+                # can identify *its* locks (task vs argus) and drop them on
+                # startup, letting Hermes' bookkeeper reclaim cleanly. Format:
+                # "<kind>:<rid>" — kept simple so legacy code that only reads
+                # TTL still works.
                 lock_key = f"hermes:lock:{run.id}"
-                await self.redis.set(lock_key, str(run.id), ex=max(_LOCK_TTL_RUNNING, lease_ttl), nx=True)
+                lock_value = f"{run.kind.value}:{run.id}"
+                await self.redis.set(lock_key, lock_value, ex=max(_LOCK_TTL_RUNNING, lease_ttl), nx=True)
 
                 await session.commit()
                 logger.info("run_claimed", run_id=str(run.id), project_id=str(run.project_id))
@@ -379,10 +604,28 @@ class HermesScheduler:
                         db_run.token_input = int(completion_meta["token_input"])
                     if completion_meta.get("token_output") is not None:
                         db_run.token_output = int(completion_meta["token_output"])
-                    delta_cost_micros = 0
                     if completion_meta.get("cost_usd_micros") is not None:
                         db_run.cost_usd_micros = int(completion_meta["cost_usd_micros"])
-                        delta_cost_micros = int(completion_meta["cost_usd_micros"])
+                    # Rate-limit annotation: if Talos detected a Claude
+                    # `rate_limit_event` with status="rejected", flag the
+                    # run AND pause every project sharing this connector
+                    # via Redis (TTL = seconds until reset). Subsequent
+                    # claim attempts skip those projects so we don't burn
+                    # through the whole queue against a wall.
+                    if completion_meta.get("rate_limited"):
+                        db_run.was_rate_limited = True
+                        retry_iso = completion_meta.get("retry_after_iso")
+                        if retry_iso:
+                            try:
+                                retry_dt = datetime.fromisoformat(retry_iso)
+                                db_run.retry_after = retry_dt
+                                await self._pause_connector_for_run(db_run, retry_dt)
+                            except (TypeError, ValueError):
+                                logger.warning(
+                                    "rate_limit_bad_retry_after",
+                                    run_id=str(db_run.id),
+                                    value=retry_iso,
+                                )
                     if db_run.started_at is not None:
                         duration = (db_run.finished_at - db_run.started_at).total_seconds()
                         RUN_DURATION_SECONDS.labels(kind=db_run.kind.value).observe(duration)
@@ -391,19 +634,6 @@ class HermesScheduler:
                     ).inc()
                     await self._postprocess_terminal_run(session, client, db_run)
                     await session.commit()
-                    await self._dispatch_lifecycle_notifications(session, db_run)
-                    if delta_cost_micros > 0:
-                        try:
-                            await maybe_notify_usage_threshold(
-                                session,
-                                project_id=db_run.project_id,
-                                run_id=db_run.id,
-                                delta_cost_micros=delta_cost_micros,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "usage_threshold_notify_failed", run_id=str(db_run.id)
-                            )
                     await client.publish_project_event(
                         db_run.project_id,
                         {
@@ -419,60 +649,6 @@ class HermesScheduler:
                 break
         except Exception:
             logger.exception("completion_update_failed", run_id=str(run.id))
-
-    # ── notifications ─────────────────────────────────────────────────────
-
-    async def _dispatch_lifecycle_notifications(self, session, run: Run) -> None:
-        """Emit the right `NotificationKind` for *run*'s terminal state.
-
-        Only ``RunKind.task`` runs trigger user-visible task notifications
-        — argus / planning / cleanup are infrastructure runs the operator
-        does not want pinging them.
-        """
-        if run.kind != RunKind.task:
-            return
-
-        kind: NotificationKind | None
-        title_verb: str
-        if run.state == RunState.completed:
-            kind, title_verb = NotificationKind.task_completed, "completed"
-        elif run.state in (RunState.failed, RunState.aborted_unsafe):
-            kind, title_verb = NotificationKind.task_failed, "failed"
-        elif run.state == RunState.cancelled:
-            return
-        else:
-            return
-
-        task = await session.get(Task, run.task_id) if run.task_id is not None else None
-        # Argus may have flipped the task into needs_fixes by the time we
-        # observe state — that's a different user signal than a raw failure.
-        if task is not None and task.status == TaskStatus.needs_fixes:
-            kind = NotificationKind.task_needs_fixes
-            title_verb = "needs fixes"
-
-        title = f"Task {title_verb}: {task.title if task else '(unknown)'}"
-        body_lines = [
-            f"Run {run.id} for task '{task.title if task else run.task_id}' "
-            f"finished with state {run.state.value}.",
-        ]
-        if run.exit_code is not None:
-            body_lines.append(f"Exit code: {run.exit_code}.")
-        try:
-            event = NotificationEvent(
-                kind=kind,
-                title=title,
-                body="\n".join(body_lines),
-                project_id=run.project_id,
-                task_id=task.id if task else None,
-                run_id=run.id,
-                metadata={
-                    "state": run.state.value,
-                    "exit_code": run.exit_code,
-                },
-            )
-            await notify(event, session)
-        except Exception:
-            logger.exception("lifecycle_notify_failed", run_id=str(run.id))
 
     # ── dispatch ──────────────────────────────────────────────────────────
 
@@ -598,26 +774,25 @@ class HermesScheduler:
     async def _build_run_signal_payload(self, run: Run, *, action: str) -> dict[str, Any]:
         task: Task | None = None
         project: Project | None = None
+        connector: Connector | None = None
         connector_spec = run.connector_snapshot or {}
 
         async for session in get_session():
             if run.task_id is not None:
                 task = await session.get(Task, run.task_id)
             project = await session.get(Project, run.project_id)
-            if not connector_spec and task is not None:
-                connector_id = task.connector_id or getattr(project, "default_connector_id", None)
-                if connector_id:
-                    result = await session.execute(
-                        select(Connector).where(Connector.connector_id == connector_id)
-                    )
-                    connector = result.scalar_one_or_none()
-                    if connector is not None:
-                        connector_spec = connector.spec
+            connector = await _connector_row_for_run(
+                session, run=run, task=task, project=project
+            )
+            if not connector_spec and connector is not None:
+                connector_spec = connector.spec
             break
 
+        effective = resolve_effective_settings(project, connector)
+
         resource_limits = dict(connector_spec.get("resource_limits", {}))
-        if project is not None and project.wall_clock_minutes_override is not None:
-            resource_limits["wall_clock_minutes"] = project.wall_clock_minutes_override
+        if effective.wall_clock_minutes is not None:
+            resource_limits["wall_clock_minutes"] = effective.wall_clock_minutes
 
         return {
             "run_id": str(run.id),
@@ -637,8 +812,8 @@ class HermesScheduler:
                 "workspace_path": project.workspace_path if project else "",
                 "git_default_branch": project.git_default_branch if project else "main",
                 "active_worktree_path": run.worktree_path or "",
-                "task_model": project.task_model if project else None,
-                "verifier_model": project.verifier_model if project else None,
+                "task_model": effective.task_model,
+                "verifier_model": effective.verifier_model,
             },
             "resource_limits": resource_limits,
         }
@@ -654,9 +829,21 @@ class HermesScheduler:
             return
 
         if run.kind == RunKind.task:
+            if run.was_rate_limited:
+                # Don't treat as a task failure — the agent didn't err, the
+                # account just ran out of headroom. Reset the task to ready
+                # so the scheduler will re-claim it once the connector is
+                # un-paused (Redis TTL). No fix-loop.
+                task.status = TaskStatus.ready
+                return
             if run.state == RunState.completed:
                 project_for_argus = await session.get(Project, run.project_id)
-                argus_on = project_for_argus is None or project_for_argus.argus_enabled
+                connector_for_argus = await _connector_row_for_run(
+                    session, run=run, task=task, project=project_for_argus
+                )
+                argus_on = resolve_effective_settings(
+                    project_for_argus, connector_for_argus
+                ).argus_enabled
                 wants_verify = (
                     run.connector_snapshot.get("verify_commands")
                     or run.connector_snapshot.get("argus_profile")
@@ -667,10 +854,36 @@ class HermesScheduler:
                     task.status = TaskStatus.done
                     await client.advance_dependents(run)
             else:
-                task.status = TaskStatus.needs_fixes
+                # Never demote a task that's already settled. Orphan-recovery
+                # races can re-postprocess a stale task-kind run AFTER Argus
+                # has already passed/cancelled the task — see cdec090d in the
+                # needs_fixes audit.
+                if task.status not in (TaskStatus.done, TaskStatus.cancelled):
+                    task.status = TaskStatus.needs_fixes
+                else:
+                    logger.info(
+                        "postprocess.skip_demotion",
+                        run_id=str(run.id),
+                        task_id=str(task.id),
+                        current_status=task.status.value,
+                        run_state=run.state.value,
+                    )
             return
 
         if run.kind != RunKind.argus:
+            return
+
+        if run.was_rate_limited:
+            # An argus run that hit the rate limit isn't a verification
+            # failure. Re-queue argus by flipping the task back to whatever
+            # state it should be in to retry verification. Easiest: leave
+            # task at `verifying` and let the scheduler re-claim once the
+            # connector unpauses; but `verifying` isn't claimable. Reset
+            # the parent task to `ready` instead so the FULL task re-runs
+            # — we lose the previous task-run's diff, but that's the price
+            # of guaranteeing fresh verification post-pause. (Acceptable;
+            # argus rate-limits are rare and the worktree is preserved.)
+            task.status = TaskStatus.ready
             return
 
         verify_exit_code = run.exit_code
@@ -682,26 +895,111 @@ class HermesScheduler:
                 logger.warning("argus.transcript_fetch_failed", run_id=str(run.id))
 
         project = await session.get(Project, task.project_id)
+        connector_for_run = await _connector_row_for_run(
+            session, run=run, task=task, project=project
+        )
+        effective = resolve_effective_settings(project, connector_for_run)
         diff_text = ""
         if run.worktree_path and project is not None:
             try:
                 diff_text = await collect_diff(run.worktree_path, project.git_default_branch)
+            except WorktreeUnreadable as exc:
+                # Infra error — this process can't see the run worktree.
+                # Don't write an Argus report (no honest verdict is
+                # possible), don't transition the task to needs_fixes
+                # (that would punish the agent for an operator problem).
+                # Reset the parent task to `ready` so the next run-all
+                # picks it up once the infra is fixed.
+                logger.error(
+                    "argus.diff_unreadable_infra",
+                    run_id=str(run.id),
+                    task_id=str(task.id),
+                    worktree_path=run.worktree_path,
+                    error=str(exc),
+                    note=(
+                        "verifier process cannot read the run worktree — "
+                        "check that /workspaces is mounted into this "
+                        "container (hermes service in docker-compose)"
+                    ),
+                )
+                task.status = TaskStatus.ready
+                return
             except Exception:
-                logger.warning("argus.diff_collect_failed", run_id=str(run.id))
+                logger.warning("argus.diff_collect_failed", run_id=str(run.id), exc_info=True)
 
         connector_spec = run.connector_snapshot or {}
         verify_commands = connector_spec.get("verify_commands") or []
 
-        argus_result = await argus_verify_run(
-            task_title=task.title,
-            task_description=task.description,
-            acceptance_criteria=task.acceptance_criteria,
-            verify_commands=list(verify_commands),
-            diff_text=diff_text,
-            verify_output=verify_output,
-            verify_exit_code=verify_exit_code,
-            verifier_model=project.verifier_model if project else None,
-        )
+        # Analytical tasks (review / audit) often produce no diff — the
+        # deliverable lives in the agent's final report. Pull it from the
+        # parent task run's transcript so Argus can judge the work, not just
+        # the absence of file changes.
+        agent_final_text = ""
+        if not diff_text.strip() and task is not None:
+            agent_final_text = await self._fetch_task_final_report(session, task.id, run.id)
+
+        # Phantom-commit guard: when the diff is empty but the agent's report
+        # claims a specific commit, that commit had better exist in the run's
+        # worktree. If it doesn't, the LLM verifier sometimes still returns
+        # `pass` based on the narrative alone — we observed this masking real
+        # failures. Short-circuit to a deterministic fail before the LLM call.
+        argus_result: ArgusVerdict | None = None
+        if (
+            not diff_text.strip()
+            and agent_final_text
+            and run.worktree_path
+        ):
+            phantom = await self._detect_phantom_commit(
+                run.worktree_path, agent_final_text
+            )
+            if phantom is not None:
+                logger.warning(
+                    "argus.phantom_commit_detected",
+                    run_id=str(run.id),
+                    task_id=str(task.id),
+                    phantom_sha=phantom,
+                )
+                argus_result = ArgusVerdict(
+                    verdict="fail",
+                    summary=(
+                        f"Agent report references commit {phantom} but the diff "
+                        f"against the default branch is empty and the SHA does "
+                        f"not resolve in the run worktree."
+                    ),
+                    findings=[
+                        {
+                            "severity": "blocker",
+                            "category": "missing",
+                            "description": (
+                                "Phantom commit claim — the agent's report cites a "
+                                "commit hash that doesn't exist in the repo."
+                            ),
+                            "evidence": phantom,
+                        }
+                    ],
+                    suggested_fix_task={
+                        "title": f"Fix: {task.title}",
+                        "description": (
+                            "Previous run claimed a commit that does not exist. "
+                            "Re-run and ensure all changes are actually committed "
+                            "to the run branch before reporting completion."
+                        ),
+                        "acceptance_criteria": task.acceptance_criteria,
+                    },
+                )
+
+        if argus_result is None:
+            argus_result = await argus_verify_run(
+                task_title=task.title,
+                task_description=task.description,
+                acceptance_criteria=task.acceptance_criteria,
+                verify_commands=list(verify_commands),
+                diff_text=diff_text,
+                verify_output=verify_output,
+                verify_exit_code=verify_exit_code,
+                verifier_model=effective.verifier_model,
+                agent_final_text=agent_final_text,
+            )
 
         verdict_map = {
             "pass": Verdict.pass_,
@@ -719,6 +1017,17 @@ class HermesScheduler:
 
         if passed:
             task.status = TaskStatus.done
+        elif task.status in (TaskStatus.done, TaskStatus.cancelled):
+            # Same race-guard as the task-kind path above: a stale argus run
+            # finishing after the task has already been settled elsewhere
+            # must not demote it.
+            logger.info(
+                "postprocess.skip_demotion",
+                run_id=str(run.id),
+                task_id=str(task.id),
+                current_status=task.status.value,
+                verdict=verdict.value,
+            )
         elif verdict == Verdict.partial:
             task.status = TaskStatus.needs_fixes
         else:
@@ -753,7 +1062,8 @@ class HermesScheduler:
                 task_id=str(task.id),
                 diff_hash=diff_hash,
             )
-            task.status = TaskStatus.needs_fixes
+            if task.status not in (TaskStatus.done, TaskStatus.cancelled):
+                task.status = TaskStatus.needs_fixes
             findings.append(
                 {
                     "severity": "blocker",
@@ -772,7 +1082,15 @@ class HermesScheduler:
 
         task.fix_loop_count += 1
         project = await session.get(Project, task.project_id)
-        if project is not None and task.fix_loop_count > project.max_fix_loops:
+        # Cap fix loops by *chain depth* (walking parent_task_id), not the
+        # per-task counter: fix-child rows start at fix_loop_count=0, so the
+        # old per-task check let chains grow unbounded. Tag the chain root for
+        # manual review and stop spawning once depth >= max_fix_loops.
+        chain_depth = await self._fix_chain_depth(session, task)
+        if project is not None and chain_depth >= effective.max_fix_loops:
+            root = await self._fix_chain_root(session, task)
+            if "manual-review" not in root.tags:
+                root.tags = list(dict.fromkeys([*root.tags, "manual-review"]))
             return
 
         fix_task = Task(
@@ -791,6 +1109,98 @@ class HermesScheduler:
 
         if project is not None and project.auto_run_fix:
             await client.enqueue_task(fix_task)
+
+    async def _fix_chain_depth(self, session, task: Task) -> int:
+        """Number of fix-loop hops between *task* and its chain root, found by
+        walking ``parent_task_id``. A root task (no parent) is depth 0. Stops
+        if the parent row is missing (orphaned) and caps at 50 hops so a
+        pathological parent cycle can't spin forever."""
+        depth = 0
+        current = task
+        for _ in range(50):
+            parent_id = current.parent_task_id
+            if parent_id is None:
+                break
+            parent = await session.get(Task, parent_id)
+            if parent is None:
+                break
+            depth += 1
+            current = parent
+        return depth
+
+    async def _fix_chain_root(self, session, task: Task) -> Task:
+        """Walk ``parent_task_id`` to the original task at the head of the
+        chain. Returns *task* itself if it has no resolvable parent. Capped at
+        50 hops to stay safe against parent cycles."""
+        current = task
+        for _ in range(50):
+            parent_id = current.parent_task_id
+            if parent_id is None:
+                break
+            parent = await session.get(Task, parent_id)
+            if parent is None:
+                break
+            current = parent
+        return current
+
+    async def _fetch_task_final_report(
+        self, session, task_id: uuid.UUID, exclude_run_id: uuid.UUID
+    ) -> str:
+        """Find the most recent task-kind run for this task and return the
+        agent's final report extracted from its transcript. Empty string if
+        no usable transcript is found."""
+        try:
+            res = await session.execute(
+                select(Run)
+                .where(Run.task_id == task_id, Run.kind == RunKind.task, Run.id != exclude_run_id)
+                .order_by(Run.created_at.desc())
+                .limit(1)
+            )
+            task_run = res.scalar_one_or_none()
+            if task_run is None or not task_run.transcript_object_key:
+                return ""
+            try:
+                transcript = get_object_store().get_text(task_run.transcript_object_key)
+            except Exception:
+                logger.warning("argus.task_transcript_fetch_failed", run_id=str(task_run.id))
+                return ""
+            return extract_agent_final_text(transcript)
+        except Exception:
+            logger.exception("argus.fetch_task_final_report_failed", task_id=str(task_id))
+            return ""
+
+    async def _detect_phantom_commit(
+        self, worktree_path: str, report_text: str
+    ) -> str | None:
+        """Return the first commit-SHA the agent's report claims that
+        does NOT resolve in the worktree, or None if every claimed SHA is
+        real (or the report claims none at all). Caller invokes this only
+        when the diff is empty — in that situation a non-resolving SHA is
+        an unambiguous lie, regardless of task type.
+        """
+        if not report_text or not worktree_path:
+            return None
+        seen: set[str] = set()
+        for match in _AGENT_COMMIT_CLAIM_RE.finditer(report_text):
+            sha = match.group(1).lower()
+            if sha in seen:
+                continue
+            seen.add(sha)
+            if len(seen) > 5:
+                break
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "cat-file", "-e", sha,
+                    cwd=worktree_path,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                rc = await asyncio.wait_for(proc.wait(), timeout=5)
+            except (asyncio.TimeoutError, Exception):
+                continue
+            if rc != 0:
+                return sha
+        return None
 
     async def _compute_diff_hash(self, run: Run, project: Project | None) -> str | None:
         if not run.worktree_path or project is None:
@@ -820,3 +1230,52 @@ class HermesScheduler:
                 if finding.get("evidence"):
                     lines.append(f"  Evidence: {finding['evidence']}")
         return "\n".join(lines)
+
+    # ── rate-limit pause ──────────────────────────────────────────────────
+
+    async def _pause_connector_for_run(self, run: Run, retry_after: datetime) -> None:
+        """Set a Redis pause key for the run's connector with TTL =
+        seconds-until-reset. While the key exists, no project using this
+        connector will have its queued runs claimed.
+        """
+        spec = run.connector_snapshot or {}
+        connector_id = spec.get("id") if isinstance(spec, dict) else None
+        if not connector_id:
+            logger.warning(
+                "rate_limit_pause_no_connector_id", run_id=str(run.id)
+            )
+            return
+        now = datetime.now(timezone.utc)
+        ttl = max(60, int((retry_after - now).total_seconds()))
+        key = f"daedalus:connector_paused:{connector_id}"
+        payload = json.dumps(
+            {
+                "connector_id": connector_id,
+                "run_id": str(run.id),
+                "project_id": str(run.project_id),
+                "retry_after": retry_after.isoformat(),
+                "hit_at": now.isoformat(),
+            }
+        )
+        try:
+            await self.redis.set(key, payload, ex=ttl)
+            logger.warning(
+                "connector_rate_limited",
+                connector_id=connector_id,
+                run_id=str(run.id),
+                retry_after=retry_after.isoformat(),
+                ttl_seconds=ttl,
+            )
+        except Exception:
+            logger.exception("connector_pause_redis_failed", run_id=str(run.id))
+
+    async def _is_connector_paused(self, connector_id: str) -> bool:
+        """Cheap boolean check: does the rate-limit pause key still exist
+        for this connector? Redis returns -2 if the key is gone."""
+        try:
+            return bool(
+                await self.redis.exists(f"daedalus:connector_paused:{connector_id}")
+            )
+        except Exception:
+            logger.exception("connector_pause_check_failed", connector_id=connector_id)
+            return False

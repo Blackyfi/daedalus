@@ -81,6 +81,16 @@ services:
       # OAuth + config for the in-container `claude` CLI. RW because
       # the CLI refreshes credentials in-place.
       - ${HOST_CLAUDE_DIR:-~/.claude}:/root/.claude
+      # Operator's SSH config so `git fetch` against ssh:// remotes works.
+      # Workspace projects use ssh remotes (git@github.com:...) and the
+      # api container is what services the per-project fetch (see
+      # GitPullBanner / git_status._fetch_and_status). Without this mount
+      # every project shows "Host key verification failed" in the UI.
+      # The mount target is /mnt/host-ssh (not /root/.ssh) because OpenSSH
+      # refuses files whose owner is neither root nor the current uid —
+      # the bind preserves host uid 1000 — so entrypoint.sh copies it
+      # into $HOME/.ssh at startup and rewrites ownership to root.
+      - ${HOST_SSH_DIR:-~/.ssh}:/mnt/host-ssh:ro
     networks: [frontnet, backnet]
     depends_on:
       postgres: { condition: service_healthy }
@@ -117,6 +127,14 @@ services:
       ROLE: hermes
     volumes:
       - ${HOST_CLAUDE_DIR:-~/.claude}:/root/.claude
+      # Read-only workspaces mount: hermes never writes here, but the scheduler
+      # MUST be able to `git diff <default>...HEAD`, `git cat-file -e <sha>`,
+      # and hash diffs in the run worktree to make verifier decisions. Without
+      # this mount every code-change task verdict collapses to "empty diff" →
+      # phantom-commit fail, regardless of what the agent actually did. The
+      # mount is `:ro` because hermes has no business mutating workspaces —
+      # that's talos / argus-worker territory.
+      - ${HOST_WORKSPACES_ROOT:-../deploy/workspaces}:/workspaces:ro
     networks: [backnet]
     depends_on:
       postgres: { condition: service_healthy }
@@ -130,6 +148,17 @@ services:
         DAEDALUS_INSTALL_EXTRAS: ${DAEDALUS_INSTALL_EXTRAS:-}
     restart: unless-stopped
     command: ["python", "-m", "daedalus.talos"]
+    # Run tini as PID 1. Talos spawns `claude` in a PTY, which shells out to
+    # git/ssh/sh; when a run is killed those grandchildren are orphaned and
+    # re-parented to PID 1. Talos has no SIGCHLD reaper, so without an init
+    # they accumulate as zombies. tini reaps them and still forwards SIGTERM
+    # so the drain handler below keeps working.
+    init: true
+    # Override docker's default 10s SIGTERM-to-SIGKILL grace. Talos's drain
+    # handler force-kills in-flight PTYs and waits for the worker threads to
+    # flush completion keys + delete `hermes:lock:<rid>` so Hermes can finalize
+    # the runs cleanly. Must be > TALOS_SHUTDOWN_DRAIN_SECONDS (default 45s).
+    stop_grace_period: 60s
     # `claude --dangerously-skip-permissions` refuses to run as root, so
     # talos drops to the `daedalus` user pre-baked in the image. The uid
     # matches the host operator (1000:1000) so bind-mounted workspaces and
@@ -162,6 +191,10 @@ services:
         DAEDALUS_INSTALL_EXTRAS: ${DAEDALUS_INSTALL_EXTRAS:-}
     restart: unless-stopped
     command: ["python", "-m", "daedalus.talos"]
+    # Reap re-parented agent grandchildren — see the talos service above.
+    init: true
+    # Same drain budget as the task-runner — argus is a Talos process too.
+    stop_grace_period: 60s
     user: "1000:1000"
     environment:
       <<: *common-env

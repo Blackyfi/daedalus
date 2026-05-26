@@ -56,40 +56,45 @@ export default function SecurityPage() {
         <h3 className="mb-2 text-xs uppercase tracking-wide text-muted">
           WebAuthn / hardware keys
         </h3>
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-left text-muted">
-              <th className="px-2 py-1">nickname</th>
-              <th className="px-2 py-1">transports</th>
-              <th className="px-2 py-1">last used</th>
-              <th className="px-2 py-1"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {creds.data?.length === 0 && (
-              <tr>
-                <td colSpan={4} className="px-2 py-2 text-muted">
-                  No hardware keys yet — enroll one below to skip TOTP at login.
-                </td>
+        <div className="-mx-3 overflow-x-auto sm:-mx-4 lg:mx-0">
+          <table className="w-full min-w-[560px] text-xs">
+            <thead>
+              <tr className="text-left text-muted">
+                <th className="px-2 py-1">nickname</th>
+                <th className="px-2 py-1">transports</th>
+                <th className="px-2 py-1">last used</th>
+                <th className="px-2 py-1"></th>
               </tr>
-            )}
-            {creds.data?.map((c) => (
-              <tr key={c.id} className="border-t border-border">
-                <td className="px-2 py-1">{c.nickname || "(unnamed)"}</td>
-                <td className="px-2 py-1 text-muted">{c.transports || "—"}</td>
-                <td className="px-2 py-1 text-muted">
-                  {c.last_used_at ? new Date(c.last_used_at).toLocaleString() : "—"}
-                </td>
-                <td className="px-2 py-1 text-right">
-                  <button className="btn btn-danger" onClick={() => remove.mutate(c.id)}>
-                    Remove
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="mt-3 flex items-end gap-2">
+            </thead>
+            <tbody>
+              {creds.data?.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-2 py-2 text-muted">
+                    No hardware keys yet — enroll one below to skip TOTP at login.
+                  </td>
+                </tr>
+              )}
+              {creds.data?.map((c) => (
+                <tr key={c.id} className="border-t border-border">
+                  <td className="px-2 py-1">{c.nickname || "(unnamed)"}</td>
+                  <td className="px-2 py-1 text-muted">{c.transports || "—"}</td>
+                  <td className="px-2 py-1 text-muted">
+                    {c.last_used_at ? new Date(c.last_used_at).toLocaleString() : "—"}
+                  </td>
+                  <td className="px-2 py-1 text-right">
+                    <button
+                      className="btn btn-danger"
+                      onClick={() => remove.mutate(c.id)}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
           <div className="flex-1">
             <label className="label">Nickname</label>
             <input
@@ -99,7 +104,7 @@ export default function SecurityPage() {
             />
           </div>
           <button
-            className="btn btn-primary"
+            className="btn btn-primary w-full sm:w-auto"
             onClick={() => enroll.mutate()}
             disabled={enroll.isPending}
           >

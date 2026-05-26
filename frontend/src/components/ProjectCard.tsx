@@ -17,6 +17,9 @@ interface Props {
   stats: ProjectStats | undefined;
   activeRun: ActiveRunner | undefined;
   gitStatus: GitStatusInfo | undefined;
+  onRunAll?: () => void;
+  runAllPending?: boolean;
+  runAllEligible?: number;
 }
 
 type Tone =
@@ -125,10 +128,23 @@ export default function ProjectCard({
   stats,
   activeRun,
   gitStatus,
+  onRunAll,
+  runAllPending,
+  runAllEligible,
 }: Props) {
   const tone = toneFor(project, stats, activeRun);
   const toneInfo = TONE[tone];
   const pullRequired = !!gitStatus?.needs_pull;
+  const eligible = runAllEligible ?? 0;
+  const canRunAll =
+    !!onRunAll && !project.archived && eligible > 0 && !pullRequired;
+  const runAllTitle = project.archived
+    ? "Project is archived"
+    : pullRequired
+      ? "git pull required before launching agents"
+      : eligible === 0
+        ? "No tasks in backlog, ready, or needs-fix"
+        : `Queue ${eligible} task${eligible === 1 ? "" : "s"} for this project`;
   const snapshot: VisitSnapshot | null = getVisitSnapshot(project.id);
   const delta = computeDelta(stats, snapshot);
   const lastVisitAgo = relativeTime(snapshot?.at);
@@ -166,6 +182,26 @@ export default function ProjectCard({
           >
             {toneInfo.label}
           </span>
+          {onRunAll && (
+            <button
+              type="button"
+              disabled={!canRunAll || runAllPending}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!canRunAll) return;
+                onRunAll();
+              }}
+              title={runAllTitle}
+              className="rounded border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-accent/10"
+            >
+              {runAllPending
+                ? "Queuing…"
+                : eligible > 0
+                  ? `▶ Run ${eligible}`
+                  : "▶ Run all"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -210,6 +246,23 @@ export default function ProjectCard({
         {!snapshot && stats && stats.total > 0 && (
           <span className="italic">first visit</span>
         )}
+        {stats && (
+          <span
+            title={
+              stats.avg_cycle_seconds_7d != null
+                ? `Average wall-clock time from first run to verified done, over ${stats.completed_in_window_7d} task${stats.completed_in_window_7d === 1 ? "" : "s"} completed in the last 7 days`
+                : "No tasks completed in the last 7 days yet"
+            }
+            className="ml-auto rounded border border-border bg-panel2 px-1.5 py-0.5 text-[10px] tracking-wide text-muted"
+          >
+            <span className="text-text">
+              {stats.avg_cycle_seconds_7d != null
+                ? formatDuration(stats.avg_cycle_seconds_7d)
+                : "N/A"}
+            </span>
+            <span className="ml-1 uppercase">avg cycle · 7d</span>
+          </span>
+        )}
       </div>
 
       {/* Description */}
@@ -218,4 +271,17 @@ export default function ProjectCard({
       )}
     </Link>
   );
+}
+
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) {
+    return hours < 10 ? `${hours.toFixed(1)}h` : `${Math.round(hours)}h`;
+  }
+  const days = hours / 24;
+  return days < 10 ? `${days.toFixed(1)}d` : `${Math.round(days)}d`;
 }

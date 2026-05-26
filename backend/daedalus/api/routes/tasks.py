@@ -12,7 +12,18 @@ from daedalus.api.schemas import RunOut, TaskIn, TaskOut, TaskPatch
 from daedalus.auth.audit import record
 from daedalus.auth.dependencies import current_user
 from daedalus.db.base import get_session
-from daedalus.db.models import Project, Role, Run, Task, TaskStatus, User
+from daedalus.db.models import (
+    Project,
+    Role,
+    Run,
+    RunKind,
+    RunState,
+    Task,
+    TaskStatus,
+    User,
+)
+
+_ACTIVE_RUN_STATES = (RunState.queued, RunState.claimed, RunState.running)
 from daedalus.git_status import needs_pull as git_needs_pull
 from daedalus.hermes.client import HermesClient
 
@@ -181,6 +192,18 @@ async def run_all_tasks(
     """
     project = await _project(db, pid, user)
     await _ensure_not_behind(project, force)
+    # Exclude tasks that already have an active task-run. `enqueue_task`
+    # flips backlog→ready up-front, so without this guard a fast double-
+    # click (or a stale UI) would happily double-enqueue every task.
+    active_runs_subq = (
+        select(Run.id)
+        .where(
+            Run.task_id == Task.id,
+            Run.kind == RunKind.task,
+            Run.state.in_(_ACTIVE_RUN_STATES),
+        )
+        .exists()
+    )
     res = await db.execute(
         select(Task)
         .where(
@@ -188,6 +211,7 @@ async def run_all_tasks(
             Task.status.in_(
                 [TaskStatus.backlog, TaskStatus.ready, TaskStatus.needs_fixes]
             ),
+            ~active_runs_subq,
         )
         .order_by(Task.priority.asc(), Task.created_at.asc())
     )
@@ -195,7 +219,8 @@ async def run_all_tasks(
     if not eligible:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "no eligible tasks (need at least one in backlog / ready / needs_fixes)",
+            "no eligible tasks (need at least one in backlog / ready / needs_fixes "
+            "without an already-active run)",
         )
 
     client = HermesClient(db)
@@ -243,6 +268,19 @@ async def run_task(
     await _ensure_not_behind(project, force)
     if task.status in (TaskStatus.in_progress, TaskStatus.verifying):
         raise HTTPException(status.HTTP_409_CONFLICT, "task is already running")
+    # status=ready can still mean "already queued" — enqueue_task flips the
+    # status before the scheduler claims it, so check for an active run too.
+    active = await db.execute(
+        select(Run.id).where(
+            Run.task_id == task.id,
+            Run.kind == RunKind.task,
+            Run.state.in_(_ACTIVE_RUN_STATES),
+        ).limit(1)
+    )
+    if active.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "task already has an active run queued"
+        )
 
     task.status = TaskStatus.ready
     await db.flush()

@@ -11,7 +11,6 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, field
 from daedalus.db.models import (
     PlanProposalStatus,
     PriorityLane,
-    ProjectIdeaStatus,
     Role,
     RunKind,
     RunState,
@@ -51,19 +50,6 @@ class ProjectIn(BaseModel):
     verifier_model: str | None = Field(default=None, max_length=120)
     argus_enabled: bool = True
     wall_clock_minutes_override: int | None = Field(default=None, ge=1, le=1440)
-    auto_run_quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
-    auto_run_quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
-    auto_run_daily_cap: int = Field(default=0, ge=0, le=500)
-    auto_run_concurrency_cap: int = Field(default=1, ge=0, le=64)
-    auto_run_hourly_cap: int = Field(default=0, ge=0, le=500)
-    auto_run_allowed_connectors: list[str] = Field(default_factory=list)
-    auto_run_eligible_statuses: list[TaskStatus] = Field(
-        default_factory=lambda: [
-            TaskStatus.backlog,
-            TaskStatus.ready,
-            TaskStatus.needs_fixes,
-        ]
-    )
 
 
 class ProjectPatch(BaseModel):
@@ -79,13 +65,6 @@ class ProjectPatch(BaseModel):
     verifier_model: str | None = Field(default=None, max_length=120)
     argus_enabled: bool | None = None
     wall_clock_minutes_override: int | None = Field(default=None, ge=1, le=1440)
-    auto_run_quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
-    auto_run_quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
-    auto_run_daily_cap: int | None = Field(default=None, ge=0, le=500)
-    auto_run_concurrency_cap: int | None = Field(default=None, ge=0, le=64)
-    auto_run_hourly_cap: int | None = Field(default=None, ge=0, le=500)
-    auto_run_allowed_connectors: list[str] | None = None
-    auto_run_eligible_statuses: list[TaskStatus] | None = None
 
 
 class ProjectOut(_Base):
@@ -104,111 +83,12 @@ class ProjectOut(_Base):
     verifier_model: str | None
     argus_enabled: bool
     wall_clock_minutes_override: int | None
-    auto_run_quiet_hours_start: int | None
-    auto_run_quiet_hours_end: int | None
-    auto_run_daily_cap: int
-    auto_run_concurrency_cap: int
-    auto_run_hourly_cap: int
-    auto_run_allowed_connectors: list[str]
-    auto_run_eligible_statuses: list[str]
     created_at: datetime
     updated_at: datetime
-
-
-# --- auto-run ---
-
-class AutoRunConfigPatch(BaseModel):
-    """Subset of project settings exposed by the AutoRun panel.
-
-    All fields are optional so the panel can PATCH partial updates.
-    """
-    auto_run_fix: bool | None = None
-    max_fix_loops: int | None = Field(default=None, ge=0, le=20)
-    wall_clock_minutes_override: int | None = Field(default=None, ge=1, le=1440)
-    default_connector_id: str | None = None
-    auto_run_quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
-    auto_run_quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
-    auto_run_daily_cap: int | None = Field(default=None, ge=0, le=500)
-    auto_run_concurrency_cap: int | None = Field(default=None, ge=0, le=64)
-    auto_run_hourly_cap: int | None = Field(default=None, ge=0, le=500)
-    auto_run_allowed_connectors: list[str] | None = None
-    auto_run_eligible_statuses: list[TaskStatus] | None = None
-
-
-class AutoRunRecentRun(_Base):
-    id: uuid.UUID
-    task_id: uuid.UUID | None
-    task_title: str | None
-    state: str
-    kind: str
-    started_at: datetime | None
-    finished_at: datetime | None
-    auto_triggered: bool
-    created_at: datetime
-
-
-class AutoRunStatusOut(BaseModel):
-    project_id: uuid.UUID
-    enabled: bool
-    max_fix_loops: int
-    wall_clock_minutes_override: int | None
-    default_connector_id: str | None
-    auto_run_quiet_hours_start: int | None
-    auto_run_quiet_hours_end: int | None
-    auto_run_daily_cap: int
-    auto_run_concurrency_cap: int
-    auto_run_hourly_cap: int
-    auto_run_allowed_connectors: list[str]
-    auto_run_eligible_statuses: list[str]
-    # Effective list the scheduler will actually consider — same as
-    # auto_run_eligible_statuses but echoed under the legacy key so older
-    # clients keep working.
-    eligible_task_statuses: list[str]
-    in_quiet_hours: bool
-    runs_today: int
-    runs_last_hour: int
-    active_auto_runs: int
-    daily_cap_remaining: int | None
-    hourly_cap_remaining: int | None
-    concurrency_remaining: int | None
-    recent_runs: list[AutoRunRecentRun]
-
-
-# --- auto-run defaults (global / org-wide) ---
-
-class AutoRunDefaultsOut(_Base):
-    """Org-wide default auto-run policy surfaced on Account/admin."""
-
-    enabled: bool
-    max_fix_loops: int
-    daily_cap: int
-    hourly_cap: int
-    concurrency_cap: int
-    quiet_hours_start: int | None
-    quiet_hours_end: int | None
-    eligible_statuses: list[str]
-    allowed_connectors: list[str]
-    updated_at: datetime
-
-
-class AutoRunDefaultsPatch(BaseModel):
-    """Partial update to the global auto-run defaults singleton.
-
-    Owner-only. All fields optional. Cross-field validation (quiet-hours
-    pair, etc.) is performed by the route handler.
-    """
-
-    enabled: bool | None = None
-    max_fix_loops: int | None = Field(default=None, ge=0, le=20)
-    daily_cap: int | None = Field(default=None, ge=0, le=500)
-    hourly_cap: int | None = Field(default=None, ge=0, le=500)
-    concurrency_cap: int | None = Field(default=None, ge=0, le=64)
-    quiet_hours_start: int | None = Field(default=None, ge=0, le=23)
-    quiet_hours_end: int | None = Field(default=None, ge=0, le=23)
-    eligible_statuses: list[TaskStatus] | None = None
-    allowed_connectors: list[str] | None = None
-
-    model_config = ConfigDict(extra="forbid")
+    # Surfaced from Redis when the default connector hit a Claude rate
+    # limit. Both null when the connector is healthy.
+    rate_limit_paused_until: datetime | None = None
+    rate_limit_paused_reason: str | None = None
 
 
 # --- task ---
@@ -289,58 +169,6 @@ class IdeaOut(_Base):
     updated_at: datetime
 
 
-# --- project idea (Projects-page idea box) ---
-
-
-class ProjectIdeaIn(BaseModel):
-    text: str = Field(min_length=1)
-    tags: list[str] = []
-
-
-class ProjectIdeaPatch(BaseModel):
-    """Inline-edit / archive surface. Promotion has its own endpoint."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    text: str | None = Field(
-        default=None,
-        min_length=1,
-        validation_alias=AliasChoices("text", "body"),
-    )
-    tags: list[str] | None = None
-    sort_index: int | None = None
-    # Allow flipping between `new` and `archived`; `promoted` is owned
-    # by the dedicated promote endpoint and is rejected here.
-    status: ProjectIdeaStatus | None = None
-
-
-class ProjectIdeaOut(_Base):
-    id: uuid.UUID
-    owner_id: uuid.UUID
-    text: str
-    tags: list[str]
-    status: ProjectIdeaStatus
-    promoted_project_id: uuid.UUID | None
-    sort_index: int
-    created_at: datetime
-    updated_at: datetime
-
-
-class ProjectIdeaPromote(BaseModel):
-    """Payload accepted by `POST /project-ideas/{id}/promote`.
-
-    Mirrors the new-project form so the SPA can pre-fill the modal
-    from the idea row before promotion.
-    """
-
-    name: str = Field(min_length=1, max_length=160)
-    description: str | None = None
-    workspace_path: str = Field(min_length=1)
-    git_default_branch: str = "main"
-    default_connector_id: str | None = None
-    init_git: bool = False
-
-
 # --- note ---
 
 class NoteIn(BaseModel):
@@ -368,6 +196,22 @@ class ConnectorIn(BaseModel):
     spec: dict[str, Any]
 
 
+class ConnectorOverridesIn(BaseModel):
+    """Operator-controlled connector-level override of project settings.
+
+    Patch semantics: only fields present in the request body are updated.
+    Pass null explicitly to clear an override (i.e. let the project's own
+    setting take effect again, even when force_project_overrides is on).
+    """
+    force_project_overrides: bool | None = None
+    override_planning_model: str | None = Field(default=None, max_length=120)
+    override_task_model: str | None = Field(default=None, max_length=120)
+    override_verifier_model: str | None = Field(default=None, max_length=120)
+    override_wall_clock_minutes: int | None = Field(default=None, ge=1, le=1440)
+    override_argus_enabled: bool | None = None
+    override_max_fix_loops: int | None = Field(default=None, ge=0, le=20)
+
+
 class ConnectorOut(_Base):
     id: uuid.UUID
     connector_id: str
@@ -375,6 +219,13 @@ class ConnectorOut(_Base):
     spec: dict[str, Any]
     schema_version: int
     enabled: bool
+    force_project_overrides: bool
+    override_planning_model: str | None
+    override_task_model: str | None
+    override_verifier_model: str | None
+    override_wall_clock_minutes: int | None
+    override_argus_enabled: bool | None
+    override_max_fix_loops: int | None
 
 
 # --- run ---
@@ -393,6 +244,8 @@ class RunOut(_Base):
     token_output: int | None
     cost_usd_micros: int | None
     retry_of: uuid.UUID | None
+    was_rate_limited: bool = False
+    retry_after: datetime | None = None
 
 
 class InjectIn(BaseModel):
@@ -493,49 +346,6 @@ class DiscoverRepoEntry(BaseModel):
 
 class DiscoverRegisterIn(BaseModel):
     repos: list[DiscoverRepoEntry] = Field(min_length=1)
-
-
-# --- notification preferences ---
-
-class NotificationPrefsOut(_Base):
-    """Mirrors `UserNotificationPref` with friendly defaults applied.
-
-    Returned even when the user has no row in `user_notification_prefs`
-    yet — in that case the dispatcher's "all on" defaults are reflected
-    so the SPA can render a coherent toggle state.
-    """
-
-    email_task_completed: bool
-    email_task_failed: bool
-    email_task_needs_fixes: bool
-    email_usage_threshold: bool
-    in_app_task_completed: bool
-    in_app_task_failed: bool
-    in_app_task_needs_fixes: bool
-    in_app_usage_threshold: bool
-    usage_threshold_micros: int | None
-
-
-class NotificationPrefsPatch(BaseModel):
-    """Partial update: only fields explicitly set are applied.
-
-    `usage_threshold_micros` is a project cumulative ceiling expressed in
-    micro-USD (1 USD = 1_000_000). Pass `null` to remove the gate.
-    """
-
-    email_task_completed: bool | None = None
-    email_task_failed: bool | None = None
-    email_task_needs_fixes: bool | None = None
-    email_usage_threshold: bool | None = None
-    in_app_task_completed: bool | None = None
-    in_app_task_failed: bool | None = None
-    in_app_task_needs_fixes: bool | None = None
-    in_app_usage_threshold: bool | None = None
-    usage_threshold_micros: int | None = Field(
-        default=None, ge=0, le=10_000_000_000
-    )
-
-    model_config = ConfigDict(extra="forbid")
 
 
 # --- audit ---
