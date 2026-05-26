@@ -21,7 +21,6 @@ remediated on `main`:
 | F6 Duplicate Vite config | ✅ Removed + gitignored | `affe245` |
 | (bonus) Unbounded fix-loop chains | ✅ Fixed — chain-depth cap + tests | `affe245` |
 | F5 mTLS header-trust | ✅ Documented (code + README); in-app verification still optional | commit `a120c74` |
-| CI gate (recommended) | ✅ Added (`.github/workflows/ci.yml`) | `a120c74` |
 | F7 Broad `except` sweep | ⏳ **Deliberately deferred** — needs a targeted pass on completion paths, not a blind bulk edit on a live system | — |
 
 The stack was rebuilt and redeployed; the API boots, runs `alembic upgrade head`
