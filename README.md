@@ -36,6 +36,14 @@ Then browse to `https://daedalus.your.lan:9443` (or whatever you set
 `DAEDALUS_HTTPS_PORT` to — defaults avoid the common 80/443/8080/8443).
 Your browser must hold a client cert issued by the CA in `internal_ca.crt`.
 
+> **Security invariant — never expose the API directly.** Caddy terminates
+> mTLS and forwards the verified client-cert fingerprint to the API via the
+> `X-Client-Cert-Fingerprint` header, which the API trusts as-is (it does not
+> re-verify the cert). The `api` service must therefore only ever be reachable
+> through Caddy — keep it off any host port mapping and off public ingress. The
+> bundled compose enforces this (the API has no published port); preserve that
+> if you customise the stack.
+
 ### LLM backend (Argus + planning)
 
 Daedalus calls any OpenAI-compatible `/v1/chat/completions` endpoint via

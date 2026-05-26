@@ -17,6 +17,16 @@ from daedalus.db.models import Role, User
 # stays NOT NULL and the audit log has a stable identifier.
 NO_MTLS_SENTINEL = "no-mtls"
 
+# SECURITY INVARIANT: the `X-Client-Cert-Fingerprint` header is *trusted as-is*.
+# Caddy (or whatever terminates mTLS) verifies the client certificate against
+# the internal CA and sets/overwrites this header before proxying. The API
+# itself does NOT re-verify the cert, so a caller that can reach the API
+# directly could forge an arbitrary fingerprint and bind a session to it.
+# Therefore the API container MUST never be reachable except through the
+# mTLS-terminating proxy — keep it off any host port / public ingress. If that
+# invariant can't be guaranteed, verify the cert in-app or gate this header
+# behind a shared secret known only to the proxy.
+
 
 async def current_cert_fingerprint(
     x_client_cert_fingerprint: Annotated[str | None, Header()] = None,
