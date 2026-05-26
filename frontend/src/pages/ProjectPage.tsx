@@ -127,6 +127,8 @@ export default function ProjectPage() {
       last_activity_at: null,
       avg_cycle_seconds_7d: null,
       completed_in_window_7d: 0,
+      cost_cap_usd_micros: null,
+      month_cost_usd_micros: 0,
     });
   }, [projectId, tasks.data]);
 

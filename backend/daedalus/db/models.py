@@ -225,6 +225,9 @@ class Project(Base, TimestampMixin):
     argus_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Per-project ceiling on wall-clock minutes; NULL → use the connector's value.
     wall_clock_minutes_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Monthly spend cap in USD micros (1_000_000 = $1.00). Null = no cap. New
+    # task runs are blocked once the calendar-month run cost reaches this.
+    monthly_cost_cap_usd_micros: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     owner: Mapped[User] = relationship(back_populates="projects")
     tasks: Mapped[list[Task]] = relationship(back_populates="project", cascade="all, delete-orphan")

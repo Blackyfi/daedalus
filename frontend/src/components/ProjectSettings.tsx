@@ -15,7 +15,13 @@ interface FormState {
   argus_enabled: boolean;
   max_fix_loops: number;
   wall_clock_minutes_override: string;
+  monthly_cost_cap_usd: string;
   default_connector_id: string;
+}
+
+// The cap is stored in USD micros server-side but edited in dollars.
+function capMicrosToDollars(micros: number | null): string {
+  return micros == null ? "" : String(micros / 1_000_000);
 }
 
 function fromProject(p: Project): FormState {
@@ -27,6 +33,7 @@ function fromProject(p: Project): FormState {
     max_fix_loops: p.max_fix_loops,
     wall_clock_minutes_override:
       p.wall_clock_minutes_override == null ? "" : String(p.wall_clock_minutes_override),
+    monthly_cost_cap_usd: capMicrosToDollars(p.monthly_cost_cap_usd_micros),
     default_connector_id: p.default_connector_id ?? "",
   };
 }
@@ -58,6 +65,10 @@ export default function ProjectSettings({ project, connectors }: Props) {
             form.wall_clock_minutes_override === ""
               ? null
               : Number(form.wall_clock_minutes_override),
+          monthly_cost_cap_usd_micros:
+            form.monthly_cost_cap_usd === ""
+              ? null
+              : Math.round(Number(form.monthly_cost_cap_usd) * 1_000_000),
           default_connector_id: form.default_connector_id || null,
         },
         { method: "PATCH" },
@@ -79,6 +90,7 @@ export default function ProjectSettings({ project, connectors }: Props) {
       (project.wall_clock_minutes_override == null
         ? ""
         : String(project.wall_clock_minutes_override)) ||
+    form.monthly_cost_cap_usd !== capMicrosToDollars(project.monthly_cost_cap_usd_micros) ||
     form.default_connector_id !== (project.default_connector_id ?? "");
 
   return (
@@ -186,6 +198,28 @@ export default function ProjectSettings({ project, connectors }: Props) {
                 }))
               }
             />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-muted" htmlFor="cost-cap">
+              Monthly cost cap (USD)
+            </label>
+            <input
+              id="cost-cap"
+              type="number"
+              min={0}
+              step="0.01"
+              placeholder="(no cap)"
+              className="field"
+              value={form.monthly_cost_cap_usd}
+              onChange={(e) =>
+                setForm((s) => ({ ...s, monthly_cost_cap_usd: e.target.value }))
+              }
+            />
+            <p className="text-[11px] text-muted">
+              Blocks new task runs once this calendar month's run cost reaches
+              the cap. Leave blank for no limit.
+            </p>
           </div>
 
           <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-between">

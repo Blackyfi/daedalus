@@ -58,6 +58,7 @@ export interface Project {
   verifier_model: string | null;
   argus_enabled: boolean;
   wall_clock_minutes_override: number | null;
+  monthly_cost_cap_usd_micros: number | null;
   created_at: string;
   updated_at: string;
   rate_limit_paused_until?: string | null;
@@ -291,6 +292,10 @@ export interface ProjectStats {
   // last 7 rolling days. `null` when no task has finished yet — render N/A.
   avg_cycle_seconds_7d: number | null;
   completed_in_window_7d: number;
+  // Monthly cost cap (config) and this calendar month's run spend, both USD
+  // micros. `cost_cap_usd_micros` is null when no cap is set.
+  cost_cap_usd_micros: number | null;
+  month_cost_usd_micros: number;
 }
 
 export type ProjectStatsMap = Record<string, ProjectStats>;
