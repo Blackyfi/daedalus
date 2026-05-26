@@ -28,6 +28,7 @@ from daedalus.db.models import (
     MergeBatch,
     MergeBatchItem,
     Project,
+    Role,
     User,
 )
 from daedalus.merge import (
@@ -184,15 +185,21 @@ def _batch_to_out(batch: MergeBatch, items: list[MergeBatchItem]) -> MergeBatchO
     )
 
 
-async def _load_project(db: AsyncSession, pid: uuid.UUID) -> Project:
+async def _load_project(db: AsyncSession, pid: uuid.UUID, user: User) -> Project:
     res = await db.execute(select(Project).where(Project.id == pid))
     project = res.scalar_one_or_none()
     if project is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+    if user.role != Role.owner and project.owner_id != user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "not your project")
     return project
 
 
-async def _load_batch(db: AsyncSession, pid: uuid.UUID, bid: uuid.UUID) -> tuple[MergeBatch, list[MergeBatchItem]]:
+async def _load_batch(
+    db: AsyncSession, pid: uuid.UUID, bid: uuid.UUID, user: User
+) -> tuple[MergeBatch, list[MergeBatchItem]]:
+    # Ownership gate first (also 404s an unknown project), then the batch.
+    await _load_project(db, pid, user)
     batch = await db.get(MergeBatch, bid)
     if batch is None or batch.project_id != pid:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "merge batch not found")
@@ -229,7 +236,7 @@ async def merge_batch_preview(
     user: Annotated[User, Depends(current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> MergePreviewOut:
-    project = await _load_project(db, pid)
+    project = await _load_project(db, pid, user)
     candidates = await select_candidates(
         db,
         project_id=project.id,
@@ -260,7 +267,7 @@ async def merge_batch_create(
     user: Annotated[User, Depends(current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> MergeBatchOut:
-    project = await _load_project(db, pid)
+    project = await _load_project(db, pid, user)
     candidates = await select_candidates(
         db,
         project_id=project.id,
@@ -306,7 +313,7 @@ async def merge_batch_create(
     )
     await db.commit()
 
-    batch, items = await _load_batch(db, project.id, batch_result.batch_id)
+    batch, items = await _load_batch(db, project.id, batch_result.batch_id, user)
     return _batch_to_out(batch, items)
 
 
@@ -316,7 +323,7 @@ async def merge_batch_list(
     user: Annotated[User, Depends(current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> list[MergeBatchOut]:
-    await _load_project(db, pid)
+    await _load_project(db, pid, user)
     res = await db.execute(
         select(MergeBatch)
         .where(MergeBatch.project_id == pid)
@@ -348,7 +355,7 @@ async def merge_batch_get(
     # unconditionally rather than gating on the items-changed list.
     changed = await reconcile_resolution_states(db, bid)
     await db.commit()
-    batch, items = await _load_batch(db, pid, bid)
+    batch, items = await _load_batch(db, pid, bid, user)
     if changed:
         await db.refresh(batch)
     return _batch_to_out(batch, items)
@@ -364,7 +371,7 @@ async def merge_batch_resolve_next(
     user: Annotated[User, Depends(current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> ResolutionStepOut | None:
-    batch, _ = await _load_batch(db, pid, bid)
+    batch, _ = await _load_batch(db, pid, bid, user)
     step = await resolve_next_conflict(db, batch.id)
     step_payload = (
         {
@@ -407,7 +414,7 @@ async def merge_batch_ship(
     user: Annotated[User, Depends(current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> ShipResultOut:
-    batch, _ = await _load_batch(db, pid, bid)
+    batch, _ = await _load_batch(db, pid, bid, user)
     result = await ship_batch(
         db,
         batch_id=batch.id,

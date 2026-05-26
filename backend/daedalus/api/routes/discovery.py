@@ -13,6 +13,7 @@ should never duplicate it.
 """
 from __future__ import annotations
 
+import os
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -85,18 +86,21 @@ async def register_repos(
 ):
     _require_owner(user)
     settings = get_settings()
-    root = settings.workspaces_root
+    root = os.path.realpath(settings.workspaces_root)
 
     res = await db.execute(select(Project.workspace_path))
     registered: set[str] = {row[0] for row in res.all()}
 
     created: list[Project] = []
     for entry in body.repos:
-        path = entry.path
+        # Canonicalize before the containment check — _path_inside is a strict
+        # string prefix test and assumes both sides are already realpath'd, so
+        # a raw path with `..` or a symlink could otherwise escape the root.
+        path = os.path.realpath(entry.path)
         if not _path_inside(root, path):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                f"path outside workspaces root: {path}",
+                f"path outside workspaces root: {entry.path}",
             )
         if path in registered:
             continue

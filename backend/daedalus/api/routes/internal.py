@@ -1,6 +1,7 @@
 """Internal automation routes used by background workers."""
 from __future__ import annotations
 
+import hmac
 import uuid
 from typing import Annotated, Any
 
@@ -19,7 +20,8 @@ router = APIRouter()
 
 
 def require_internal_key(x_daedalus_internal_key: Annotated[str | None, Header()] = None) -> None:
-    if x_daedalus_internal_key != get_settings().session_secret:
+    expected = get_settings().internal_key
+    if not x_daedalus_internal_key or not hmac.compare_digest(x_daedalus_internal_key, expected):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid internal key")
 
 

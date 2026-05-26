@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     lockout_minutes: int = Field(15, alias="LOCKOUT_MINUTES")
     ip_ban_threshold: int = Field(25, alias="IP_BAN_THRESHOLD")
     ip_ban_minutes: int = Field(60, alias="IP_BAN_MINUTES")
+    # Application-level encryption key for the TOTP secret at rest. When unset,
+    # a key is derived deterministically from password_pepper (see auth.totp).
+    totp_enc_key: str | None = Field(None, alias="TOTP_ENC_KEY")
     # When True (legacy / multi-org deployments) the API requires
     # `X-Client-Cert-Fingerprint` from the reverse proxy and binds sessions
     # to it. When False (self-hosted single-org behind Tailscale + Caddy
@@ -96,6 +99,15 @@ class Settings(BaseSettings):
     # Workers (hermes/talos) reach the API container directly over backnet,
     # not via the public mTLS URL.
     internal_api_base: str = Field("http://api:8000", alias="INTERNAL_API_BASE")
+    # Bearer key for the worker→API internal routes (/api/internal/*). Kept
+    # distinct from session_secret so leaking one doesn't compromise the other
+    # (a session-signing secret should never double as a transmitted bearer
+    # credential). Falls back to session_secret when unset, for compatibility.
+    internal_api_key: str | None = Field(None, alias="INTERNAL_API_KEY")
+
+    @property
+    def internal_key(self) -> str:
+        return self.internal_api_key or self.session_secret
 
     # --- llm (used by Argus + planning) ---
     # Backend selector:

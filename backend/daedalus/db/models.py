@@ -135,7 +135,7 @@ class User(Base, TimestampMixin):
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)  # argon2id
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    totp_secret: Mapped[str | None] = mapped_column(Text, nullable=True)  # base32, encrypted at rest
+    totp_secret: Mapped[str | None] = mapped_column(Text, nullable=True)  # base32, Fernet-encrypted at rest (auth.totp); legacy rows plaintext until next login
     totp_enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     recovery_codes_hash: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, nullable=False)
 

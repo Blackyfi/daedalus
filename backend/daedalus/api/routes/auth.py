@@ -210,7 +210,8 @@ async def step_totp(
     if await _get_login_stage(body.email) != _LOGIN_STAGE_TOTP:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid")
 
-    if not totp.verify_totp(user.totp_secret, body.code):
+    totp_secret = totp.decrypt_secret(user.totp_secret)
+    if not totp.verify_totp(totp_secret, body.code):
         # try as recovery code
         ok, remaining = totp.consume_recovery_code(user.recovery_codes_hash, body.code)
         if not ok:
@@ -223,6 +224,10 @@ async def step_totp(
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "totp invalid")
         user.recovery_codes_hash = remaining
 
+    # Lazy migration: re-store a legacy plaintext secret in encrypted form once
+    # we've confirmed we can read it.
+    if totp_secret and not totp.is_encrypted(user.totp_secret):
+        user.totp_secret = totp.encrypt_secret(totp_secret)
     user.failed_login_count = 0
     await _clear_login_stage(body.email)
     if not user.pinned_cert_fingerprint:
@@ -290,7 +295,9 @@ async def logout(
     db: AsyncSession = Depends(get_session),
 ):
     if session_cookie:
-        sid = unsign_session_id(session_cookie, max_age_seconds=24 * 3600 * 7)
+        sid = unsign_session_id(
+            session_cookie, max_age_seconds=get_settings().session_hard_hours * 3600
+        )
         if sid:
             await revoke_session(db, sid)
             await audit.record(
