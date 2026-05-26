@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from daedalus.api.schemas import ConnectorIn, ConnectorOut
+from daedalus.api.schemas import ConnectorIn, ConnectorOut, ConnectorOverridesIn
 from daedalus.auth.audit import record
 from daedalus.auth.dependencies import current_user, require_role
 from daedalus.connectors.schema import CONNECTOR_SCHEMA
@@ -110,6 +110,38 @@ async def upsert_connector(
         action="connector.upsert", target_kind="connector", target_id=cid,
     )
     await db.commit()
+    return connector
+
+
+@router.patch("/{cid}/overrides", response_model=ConnectorOut,
+              dependencies=[Depends(require_role(Role.owner))])
+async def patch_connector_overrides(
+    cid: str,
+    body: ConnectorOverridesIn,
+    request: Request,
+    user: Annotated[User, Depends(current_user)],
+    db: AsyncSession = Depends(get_session),
+):
+    """Update the connector's emergency project-override settings.
+
+    PATCH semantics: only fields present in the request body are written.
+    Pass a field as null to clear that specific override.
+    """
+    res = await db.execute(select(Connector).where(Connector.connector_id == cid))
+    connector = res.scalar_one_or_none()
+    if not connector:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    changes = body.model_dump(exclude_unset=True)
+    for field, value in changes.items():
+        setattr(connector, field, value)
+
+    await record(
+        db, actor_user_id=user.id, actor_cert_fp=request.state.cert_fp,
+        action="connector.overrides_patch", target_kind="connector", target_id=cid,
+    )
+    await db.commit()
+    await db.refresh(connector)
     return connector
 
 

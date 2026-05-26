@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from daedalus.connectors.overrides import resolve as resolve_effective_settings
 from daedalus.core.settings import get_settings
 from daedalus.db.base import get_session
 from daedalus.db.models import Connector, Idea, PlanProposal, PlanProposalStatus, Project, Task
@@ -69,6 +70,17 @@ async def generate_plan(
     )
     available_connector_ids = [row[0] for row in connectors_res.all()]
 
+    # Honour connector-level overrides (force_project_overrides) when
+    # resolving which planning model to use. The relevant connector here is
+    # the project's default — that's what the planner runs under.
+    default_connector: Connector | None = None
+    if project.default_connector_id:
+        cres = await db.execute(
+            select(Connector).where(Connector.connector_id == project.default_connector_id)
+        )
+        default_connector = cres.scalar_one_or_none()
+    effective = resolve_effective_settings(project, default_connector)
+
     proposal = await build_proposal(
         project_name=project.name,
         project_description=project.description or "",
@@ -78,7 +90,7 @@ async def generate_plan(
         available_connector_ids=available_connector_ids,
         existing_tasks=existing_tasks,
         ideas=ideas_payload,
-        planning_model=project.planning_model,
+        planning_model=effective.planning_model,
     )
 
     run_id_raw = body.get("run_id")

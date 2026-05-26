@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, MetaData, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -29,14 +29,29 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
+def _utcnow() -> datetime:
+    # tz-aware, app-side. Used by TimestampMixin.updated_at — see note there.
+    return datetime.now(timezone.utc)
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # NB: `onupdate` is *Python-side* deliberately. Using `func.now()` here
+    # makes the UPDATE statement say `updated_at = now()`, which means the
+    # post-UPDATE in-memory value is unknown to SQLAlchemy — it expires the
+    # attribute, and the next access (e.g. `obj.updated_at.isoformat()` in
+    # a response serializer) tries to lazy-load it. Under an async session
+    # that lazy-load happens from sync attribute-access code and fails with
+    # `MissingGreenlet: greenlet_spawn has not been called`. Computing the
+    # value Python-side keeps the in-memory state consistent with the DB
+    # write and avoids the expire-then-lazy-load trap entirely.
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=func.now(),
+        default=_utcnow,
+        onupdate=_utcnow,
         nullable=False,
     )
 

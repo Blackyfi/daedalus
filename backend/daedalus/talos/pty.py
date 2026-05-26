@@ -98,10 +98,16 @@ class PTYSession:
         self.write(text.encode())
 
     def send_signal(self, sig: int) -> None:
-        """Send a signal to the child process."""
+        """Signal the child's whole process group, not just the leader.
+
+        ptyprocess makes the child a session/group leader, so its pid is
+        also its pgid. Signalling the group ensures the agent's own
+        children — git, ssh, verify scripts — die with the run instead of
+        being orphaned to the container init and lingering as zombies.
+        """
         if self._proc and self._proc.isalive():
             try:
-                os.kill(self._proc.pid, sig)
+                os.killpg(os.getpgid(self._proc.pid), sig)
                 log.info("pty.signal", signal=sig, pid=self._proc.pid)
             except OSError:
                 log.warning("pty.signal_failed", signal=sig, pid=self._proc.pid)

@@ -306,7 +306,96 @@ class HermesClient:
                 error=str(exc),
             )
 
+        # The api/hermes containers run as root, but talos/argus-worker run
+        # as the daedalus user (uid 1000) so claude can use
+        # `--dangerously-skip-permissions`. Without this chown the agent
+        # finds its own worktree read-only, falls back to side-cloning into
+        # /home/daedalus, and verifier sees an empty diff.
+        # Two locations need ownership: the worktree itself, and the
+        # corresponding `.git/worktrees/<run_id>/` admin dir where git
+        # writes HEAD on each commit.
+        agent_uid = self.settings.agent_uid
+        agent_gid = self.settings.agent_gid
+        if agent_uid is not None and agent_gid is not None:
+            self._chown_tree(worktree_path, agent_uid, agent_gid)
+            admin_dir = os.path.join(
+                project.workspace_path, ".git", "worktrees", str(run.id)
+            )
+            if os.path.isdir(admin_dir):
+                self._chown_tree(admin_dir, agent_uid, agent_gid)
+
+        self._ensure_artifact_gitignore(worktree_path)
+
         run.worktree_path = worktree_path
+
+    @staticmethod
+    def _ensure_artifact_gitignore(worktree_path: str) -> None:
+        """Append standard compiled-artefact patterns to the worktree's
+        .gitignore if missing. Prevents agents from committing
+        .pyc/__pycache__/node_modules/etc. when a project's own .gitignore
+        doesn't already cover them — the agent keeps full freedom to create
+        those files at runtime; they just can't end up in the diff fed to
+        Argus. See task 5256b444 in the needs_fixes audit (commit contained
+        only .pyc files)."""
+        patterns = [
+            "__pycache__/",
+            "*.py[cod]",
+            "*$py.class",
+            ".pytest_cache/",
+            ".mypy_cache/",
+            ".ruff_cache/",
+            "node_modules/",
+            "dist/",
+            "build/",
+            ".next/",
+            ".nuxt/",
+            "target/",
+            ".gradle/",
+            ".idea/",
+            ".vscode/",
+            "*.class",
+            "*.o",
+            "*.so",
+            "*.dylib",
+        ]
+        gitignore_path = os.path.join(worktree_path, ".gitignore")
+        try:
+            existing = ""
+            if os.path.exists(gitignore_path):
+                with open(gitignore_path, encoding="utf-8", errors="replace") as fh:
+                    existing = fh.read()
+            existing_lines = {line.strip() for line in existing.splitlines()}
+            missing = [p for p in patterns if p not in existing_lines]
+            if not missing:
+                return
+            header = "\n# Daedalus: auto-appended compiled-artefact patterns\n"
+            with open(gitignore_path, "a", encoding="utf-8") as fh:
+                if existing and not existing.endswith("\n"):
+                    fh.write("\n")
+                fh.write(header)
+                fh.write("\n".join(missing) + "\n")
+        except Exception as exc:
+            logger.warning(
+                "gitignore_patch_failed", path=worktree_path, error=str(exc)
+            )
+
+    @staticmethod
+    def _chown_tree(path: str, uid: int, gid: int) -> None:
+        try:
+            os.chown(path, uid, gid)
+            for root, dirs, files in os.walk(path):
+                for name in dirs:
+                    try:
+                        os.chown(os.path.join(root, name), uid, gid, follow_symlinks=False)
+                    except OSError:
+                        pass
+                for name in files:
+                    try:
+                        os.chown(os.path.join(root, name), uid, gid, follow_symlinks=False)
+                    except OSError:
+                        pass
+        except OSError as exc:
+            logger.warning("worktree_chown_failed", path=path, error=str(exc))
 
     async def _maybe_create_yolo_snapshot(self, run: Run) -> None:
         """If the run's connector profile is `yolo`, tag the worktree HEAD

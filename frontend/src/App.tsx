@@ -9,7 +9,7 @@ import ConnectorsPage from "./pages/ConnectorsPage";
 import AuditPage from "./pages/AuditPage";
 import SecurityPage from "./pages/SecurityPage";
 import AlgorithmsPage from "./pages/AlgorithmsPage";
-import AccountPage from "./pages/AccountPage";
+import KPIPage from "./pages/KPIPage";
 import Shell from "./components/Shell";
 
 function PrivateOutlet({ children }: { children: React.ReactNode }) {
@@ -35,12 +35,16 @@ export default function App() {
   const setAuthed = useApp((s) => s.setAuthed);
   const setBootChecked = useApp((s) => s.setBootChecked);
 
-  // On boot, probe whether the session cookie is still valid.
+  // On boot, probe whether the session cookie is still valid. Use the
+  // dedicated /auth/status endpoint instead of /projects so the browser
+  // doesn't log a 401 to the console for every unauthenticated page load.
   useEffect(() => {
     (async () => {
       try {
-        await api("/api/v1/projects");
-        setAuthed(true);
+        const res = await api<{ authenticated: boolean }>(
+          "/api/v1/auth/status",
+        );
+        setAuthed(!!res?.authenticated);
       } catch {
         setAuthed(false);
       } finally {
@@ -71,11 +75,11 @@ export default function App() {
           <Route path="/" element={<ProjectListPage />} />
           <Route path="/projects/:projectId" element={<ProjectPage />} />
           <Route path="/projects/:projectId/runs/:runId" element={<ProjectPage />} />
+          <Route path="/kpis" element={<KPIPage />} />
           <Route path="/connectors" element={<ConnectorsPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/security" element={<SecurityPage />} />
           <Route path="/algorithms" element={<AlgorithmsPage />} />
-          <Route path="/account" element={<AccountPage />} />
         </Route>
       </Routes>
     </div>

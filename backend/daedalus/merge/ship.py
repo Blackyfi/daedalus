@@ -10,7 +10,7 @@ import asyncio
 import os
 import shutil
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import structlog
@@ -18,7 +18,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from daedalus.db.models import (
-    OPEN_MERGE_BATCH_STATES,
     MergeBatch,
     MergeBatchItem,
     MergeBatchState,
@@ -38,10 +37,6 @@ class ShipResult:
     pruned_branches: list[str]
     removed_worktree: bool
     error: str | None = None
-    # Sibling batches auto-aborted because their work is now reachable
-    # from `default_branch` via the just-shipped batch. Populated by
-    # `_reconcile_superseded_batches` after a successful ship.
-    superseded_batch_ids: list[uuid.UUID] = field(default_factory=list)
 
 
 async def ship_batch(
@@ -192,113 +187,13 @@ async def ship_batch(
 
     batch.state = MergeBatchState.shipped
     batch.shipped_at = datetime.now(timezone.utc)
-
-    # Reconcile sibling batches: any other open batch in this project whose
-    # work is now reachable from `default_branch` (i.e. its items either
-    # landed via this ship, were already on main, or contribute nothing) is
-    # superseded — its integration branch would no-op or fast-forward-refuse
-    # on a manual ship. Auto-abort with a clear error so the UI does not
-    # show "N merges ready to ship" pointing at zombies.
-    superseded = await _reconcile_superseded_batches(
-        db,
-        project_id=batch.project_id,
-        shipped_batch_id=batch.id,
-        workspace=workspace,
-        default_branch=default_branch,
-    )
-
     return ShipResult(
         state="shipped",
         integration_branch=batch.integration_branch,
         default_branch=default_branch,
         pruned_branches=pruned,
         removed_worktree=removed,
-        superseded_batch_ids=superseded,
     )
-
-
-async def _reconcile_superseded_batches(
-    db: AsyncSession,
-    project_id: uuid.UUID,
-    shipped_batch_id: uuid.UUID,
-    workspace: str,
-    default_branch: str,
-) -> list[uuid.UUID]:
-    """Find other open batches in this project whose item branches are
-    all reachable from `default_branch` now, and mark them aborted.
-
-    "Reachable" here means: for every item in the sibling batch, either
-      (a) the source branch no longer exists locally (already cleaned up
-          by some prior ship), or
-      (b) the source branch's tip is an ancestor of `default_branch` (the
-          work is in main), or
-      (c) the source branch is empty / missing-run (contributes nothing).
-
-    A batch satisfying that for *all* its items contributes no new
-    commits to main; trying to ship it would no-op or fast-forward-refuse.
-    Mark it aborted and record which batch superseded it."""
-    res = await db.execute(
-        select(MergeBatch).where(
-            MergeBatch.project_id == project_id,
-            MergeBatch.id != shipped_batch_id,
-            MergeBatch.state.in_(OPEN_MERGE_BATCH_STATES),
-        )
-    )
-    superseded: list[uuid.UUID] = []
-    for other in res.scalars():
-        items_res = await db.execute(
-            select(MergeBatchItem).where(MergeBatchItem.batch_id == other.id)
-        )
-        items = list(items_res.scalars())
-        if not items:
-            continue
-        if not await _all_items_in_main(workspace, default_branch, items):
-            continue
-        other.state = MergeBatchState.aborted
-        prior = (other.error + "\n") if other.error else ""
-        other.error = (
-            f"{prior}Superseded by batch {shipped_batch_id} which shipped the "
-            f"same task set. All source branches in this batch are now reachable "
-            f"from {default_branch}; a manual ship would be a no-op or refused."
-        )
-        superseded.append(other.id)
-        logger.info(
-            "ship_superseded_batch_aborted",
-            superseded_batch_id=str(other.id),
-            by_batch_id=str(shipped_batch_id),
-            project_id=str(project_id),
-        )
-    return superseded
-
-
-async def _all_items_in_main(
-    workspace: str, default_branch: str, items: list[MergeBatchItem]
-) -> bool:
-    """True iff every item in this batch contributes nothing main doesn't
-    already have — its source branch is gone, missing, empty, or an
-    ancestor of `default_branch`."""
-    for item in items:
-        if not item.branch:
-            # Missing-run items never had a branch — they can't possibly
-            # contribute work, so they don't block the supersession.
-            continue
-        rc, _, _ = await _git(
-            workspace, "rev-parse", "--verify", "--quiet", f"refs/heads/{item.branch}"
-        )
-        if rc != 0:
-            # Branch was pruned (likely by the sibling ship that already
-            # cleaned it up). Not in our way.
-            continue
-        rc, _, _ = await _git(
-            workspace,
-            "merge-base",
-            "--is-ancestor",
-            item.branch,
-            default_branch,
-        )
-        if rc != 0:
-            return False
-    return True
 
 
 async def _git(cwd: str, *args: str) -> tuple[int, str, str]:

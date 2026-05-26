@@ -52,6 +52,19 @@ class RunContext:
     cgroup: RunCgroup | None = None
     connector_spec: dict | None = None
     project_id: str | None = None
+    # True iff this run's PTY was force-killed by the shutdown drain (SIGTERM
+    # to the Talos process). `_complete_run` maps this to state=aborted_unsafe
+    # so Hermes' finalization + the SPA show the run as drain-aborted instead
+    # of a normal `failed`.
+    shutdown_killed: bool = False
+    # Resolved working directory the agent ran in. Captured so `_complete_run`
+    # can stage+commit the agent's edits — Talos owns the commit boundary so
+    # Argus's `git diff <default>...HEAD` is deterministic, instead of
+    # depending on the model to remember to commit.
+    workdir: str | None = None
+    task_title: str = ""
+    # False for argus runs (read-only verifier — never commit).
+    auto_commit: bool = True
 
 
 class TalosRunner:
@@ -70,6 +83,11 @@ class TalosRunner:
             max_workers=max(1, self.settings.max_concurrent_projects),
             thread_name_prefix="talos-run",
         )
+        # Tracked so the shutdown drain can wait on them with a timeout.
+        # ThreadPoolExecutor.shutdown(wait=True) has no timeout option, so we
+        # do it manually via concurrent.futures.wait.
+        self._futures: set[concurrent.futures.Future] = set()
+        self._futures_lock = threading.Lock()
         self._pythia_thread: threading.Thread | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
@@ -84,10 +102,77 @@ class TalosRunner:
         if self.settings.role == "talos":
             self._start_pythia_thread()
         self._listen_for_jobs()
+        # Listener has exited (shutdown was requested). Drain in-flight runs
+        # before the process dies so Hermes doesn't see zombie locks/leases.
+        self._drain_in_flight()
 
     def request_shutdown(self) -> None:
+        # Called from the SIGTERM/SIGINT handler — keep it minimal. The actual
+        # drain runs after the listener exits, in run_loop's main thread.
+        if self._shutdown:
+            return
         self._shutdown = True
         log.info("talos.shutdown_requested", in_flight=len(self.contexts))
+
+    def _drain_in_flight(self) -> None:
+        """Force-stop every active PTY and wait for the worker threads.
+
+        Each `_safe_execute_*` future ends with `_complete_run` (writes the
+        Redis completion key + marks state) and `_cleanup_context` (deletes
+        `hermes:lock:<rid>`). Hermes' bookkeeper then picks up the completion
+        key on its next tick and finalizes the DB row + releases the project
+        lease — same code path it uses for any other terminal run.
+
+        Capped at `talos_shutdown_drain_seconds` so docker's SIGKILL deadline
+        doesn't catch us mid-cleanup. Stragglers past the deadline are logged
+        and left for Hermes' orphan-reclaim sweep to recover (the lock TTL
+        will eventually expire even if we never made it to `delete`).
+        """
+        with self._contexts_lock:
+            ctx_list = list(self.contexts.values())
+        with self._futures_lock:
+            futures = set(self._futures)
+
+        if not ctx_list and not futures:
+            log.info("talos.drain_no_inflight")
+            return
+
+        log.info(
+            "talos.drain_starting",
+            in_flight=len(ctx_list),
+            futures=len(futures),
+            budget_seconds=self.settings.talos_shutdown_drain_seconds,
+        )
+        for ctx in ctx_list:
+            ctx.shutdown_killed = True
+            session = ctx.session
+            if session is None:
+                continue
+            try:
+                session.kill()
+            except Exception:
+                log.warning(
+                    "talos.drain_kill_failed",
+                    run_id=ctx.run_id,
+                    exc_info=True,
+                )
+
+        # Wait for the worker threads to flush their completion + cleanup.
+        budget = self.settings.talos_shutdown_drain_seconds
+        if futures:
+            done, not_done = concurrent.futures.wait(futures, timeout=budget)
+            if not_done:
+                log.warning(
+                    "talos.drain_stragglers",
+                    count=len(not_done),
+                    note="lock keys may rely on TTL expiry + Hermes reclaim",
+                )
+            else:
+                log.info("talos.drain_complete", drained=len(done))
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=False)
+        except Exception:
+            log.exception("talos.executor_shutdown_failed")
 
     # ── listener (sync, single thread) ────────────────────────────────────
 
@@ -161,15 +246,22 @@ class TalosRunner:
         resource_limits = payload.get("resource_limits", {})
 
         if kind == "task":
-            self._executor.submit(
+            fut = self._executor.submit(
                 self._safe_execute_task,
                 ctx, connector_spec, task_info, project_info, resource_limits,
             )
         else:
-            self._executor.submit(
+            fut = self._executor.submit(
                 self._safe_execute_argus,
                 ctx, connector_spec, task_info, project_info, resource_limits,
             )
+        with self._futures_lock:
+            self._futures.add(fut)
+        fut.add_done_callback(self._on_future_done)
+
+    def _on_future_done(self, fut: concurrent.futures.Future) -> None:
+        with self._futures_lock:
+            self._futures.discard(fut)
 
     def _handle_lifecycle(self, run_id: str, action: str, payload: dict) -> None:
         with self._contexts_lock:
@@ -285,6 +377,9 @@ class TalosRunner:
             worktree_path = self._create_worktree(project_info, ctx.run_id)
             if worktree_path:
                 workdir = worktree_path
+
+        ctx.workdir = workdir
+        ctx.task_title = task_info.get("title", "") or ""
 
         input_text = self._build_prompt(connector_spec, task_info)
 
@@ -468,6 +563,7 @@ class TalosRunner:
         transcript_text = self._render_transcript_text(ctx)
         transcript_object_key = self._persist_transcript(ctx)
         usage = self._parse_usage(ctx, transcript_text)
+        rate_limited, retry_after_iso = _detect_rate_limit(transcript_text)
         log.info(
             "talos.completed",
             run_id=ctx.run_id,
@@ -475,13 +571,25 @@ class TalosRunner:
             token_input=usage.token_input,
             token_output=usage.token_output,
             cost_usd_micros=usage.cost_usd_micros,
+            rate_limited=rate_limited,
         )
-        if ctx.idle_killed:
+        if ctx.shutdown_killed:
+            # Talos is mid-drain; this run was force-killed by the shutdown
+            # handler, not by the agent or the wall-clock guard. Surface that
+            # explicitly so the SPA doesn't show it as a normal `failed` run.
+            state = "aborted_unsafe"
+        elif ctx.idle_killed:
             state = "failed"
         elif ctx.done_signal_seen:
             state = "completed"
         else:
             state = "completed" if exit_code == 0 else "failed"
+
+        # Auto-commit on success. Must happen BEFORE we publish the
+        # completion key — Hermes reacts to that key by enqueueing Argus,
+        # whose `git diff <default>...HEAD` only sees committed history.
+        if state == "completed" and ctx.auto_commit:
+            self._maybe_auto_commit(ctx)
         completion = {
             "run_id": ctx.run_id,
             "exit_code": exit_code,
@@ -492,6 +600,8 @@ class TalosRunner:
             "token_input": usage.token_input,
             "token_output": usage.token_output,
             "cost_usd_micros": usage.cost_usd_micros,
+            "rate_limited": rate_limited,
+            "retry_after_iso": retry_after_iso,
         }
         self.redis.hset("hermes:run", ctx.run_id, json.dumps(completion))
         self.redis.set(f"hermes:completion:{ctx.run_id}", json.dumps(completion), ex=86400)
@@ -506,6 +616,76 @@ class TalosRunner:
                 pass
         with ctx.transcript_lock:
             ctx.transcript_chunks = []
+
+    def _maybe_auto_commit(self, ctx: RunContext) -> None:
+        """Stage and commit any working-tree changes the agent produced.
+
+        Argus diffs the run branch against the project's default branch
+        (`git diff <default>...HEAD`). If the agent edits files but never
+        commits — empirically the dominant failure mode — that diff is
+        empty and Argus correctly fails the run. By owning the commit
+        boundary here we make the diff deterministic regardless of what
+        the agent does.
+
+        Best-effort: a commit failure is logged and swallowed. The verifier
+        will still observe whatever state landed (or didn't), so worst case
+        we degrade to today's behaviour rather than blocking the pipeline.
+        """
+        workdir = ctx.workdir
+        if not workdir or not os.path.isdir(workdir):
+            return
+        try:
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=workdir,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if status.returncode != 0:
+                log.warning(
+                    "talos.auto_commit_status_failed",
+                    run_id=ctx.run_id,
+                    stderr=status.stderr.strip()[:500],
+                )
+                return
+            if not status.stdout.strip():
+                return  # clean tree — agent did nothing or already committed
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=workdir,
+                capture_output=True,
+                timeout=60,
+            )
+            title_line = (ctx.task_title or "").strip().splitlines()[0:1]
+            title = (title_line[0] if title_line else f"task run {ctx.run_id}")[:120]
+            message = f"daedalus: {title}\n\nrun-id: {ctx.run_id}\n"
+            commit = subprocess.run(
+                [
+                    "git",
+                    "-c", "user.name=Daedalus",
+                    "-c", "user.email=daedalus@daedalus.local",
+                    "commit",
+                    "-m", message,
+                    "--no-verify",
+                ],
+                cwd=workdir,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if commit.returncode == 0:
+                log.info("talos.auto_commit", run_id=ctx.run_id)
+            else:
+                log.warning(
+                    "talos.auto_commit_failed",
+                    run_id=ctx.run_id,
+                    rc=commit.returncode,
+                    stdout=commit.stdout.strip()[:500],
+                    stderr=commit.stderr.strip()[:500],
+                )
+        except Exception:
+            log.warning("talos.auto_commit_exception", run_id=ctx.run_id, exc_info=True)
 
     def _render_transcript_text(self, ctx: RunContext) -> str:
         with ctx.transcript_lock:
@@ -525,9 +705,18 @@ class TalosRunner:
 
     def _persist_transcript(self, ctx: RunContext) -> str | None:
         with ctx.transcript_lock:
-            if not ctx.transcript_chunks:
-                return None
             transcript = b"".join(ctx.transcript_chunks)
+        if not transcript:
+            # A run that produced zero output is still a run — Argus needs
+            # a transcript key to distinguish "verify ran cleanly, silent"
+            # from "verify never happened". Synthesize a minimal record
+            # carrying the exit code so the verifier has a deterministic
+            # signal instead of "(no output captured)".
+            exit_code = ctx.session.exit_code if ctx.session is not None else None
+            transcript = (
+                f"[talos] run {ctx.run_id} produced no output; "
+                f"exit_code={exit_code}\n"
+            ).encode()
         key = f"runs/{ctx.run_id}/transcript.log"
         try:
             return get_object_store().put_bytes(key, transcript, content_type="text/plain; charset=utf-8")
@@ -569,16 +758,79 @@ class TalosRunner:
                 text=True,
                 timeout=30,
             )
+            self._ensure_artifact_gitignore(run_dir)
             log.info("talos.worktree_created", path=run_dir, run_id=run_id)
             return run_dir
         except Exception:
             log.warning("talos.worktree_failed", run_id=run_id, exc_info=True)
             return None
 
+    def _ensure_artifact_gitignore(self, worktree_path: str) -> None:
+        """Append standard compiled-artefact patterns to .gitignore if absent.
+
+        Prevents agents from committing .pyc/__pycache__/node_modules/etc.
+        when a project's own .gitignore doesn't already cover them — the
+        agent retains full capability to create these files, they just
+        can't end up in the diff fed to Argus. See task 5256b444 in the
+        needs_fixes audit (commit contained only .pyc files).
+        """
+        patterns = [
+            "__pycache__/",
+            "*.py[cod]",
+            "*$py.class",
+            ".pytest_cache/",
+            ".mypy_cache/",
+            ".ruff_cache/",
+            "node_modules/",
+            "dist/",
+            "build/",
+            ".next/",
+            ".nuxt/",
+            "target/",
+            ".gradle/",
+            ".idea/",
+            ".vscode/",
+            "*.class",
+            "*.o",
+            "*.so",
+            "*.dylib",
+        ]
+        gitignore_path = os.path.join(worktree_path, ".gitignore")
+        try:
+            existing = ""
+            if os.path.exists(gitignore_path):
+                with open(gitignore_path, encoding="utf-8", errors="replace") as fh:
+                    existing = fh.read()
+            existing_lines = {line.strip() for line in existing.splitlines()}
+            missing = [p for p in patterns if p not in existing_lines]
+            if not missing:
+                return
+            header = "\n# Daedalus: auto-appended compiled-artefact patterns\n"
+            with open(gitignore_path, "a", encoding="utf-8") as fh:
+                if existing and not existing.endswith("\n"):
+                    fh.write("\n")
+                fh.write(header)
+                fh.write("\n".join(missing) + "\n")
+        except Exception:
+            log.warning("talos.gitignore_patch_failed", path=worktree_path, exc_info=True)
+
     def _recover_orphans(self) -> None:
-        # Mostly handled by Hermes now (per-run lock + project lease). Talos
-        # only needs to ensure the legacy single-runner global lock isn't
-        # carried into the multi-run world.
+        """Drop stale per-run locks left by a previous Talos process.
+
+        The lock value is `"<kind>:<rid>"` (set by Hermes when the run was
+        claimed). On boot we scan every `hermes:lock:*` key and delete the
+        ones matching our role's kind — this Talos process can't be running
+        them (we just started, contexts is empty), so they're orphans by
+        definition. Hermes' bookkeeper then reclaims them as
+        `aborted_unsafe` within ~5s via the existing orphan-reclaim path.
+
+        This closes the rolling-restart claim window: between SIGTERM to
+        the old Talos and `_listen_for_jobs` on the new one, Hermes can
+        claim runs whose `hermes:signal:*` pub/sub messages have no
+        subscriber and are silently dropped. Without this sweep those
+        runs would stay `running` forever (lock TTL is hours).
+        """
+        my_kind = "task" if self.settings.role == "talos" else "argus"
         legacy = self.redis.get("hermes:lock")
         if legacy:
             try:
@@ -586,6 +838,37 @@ class TalosRunner:
                 log.info("talos.legacy_lock_cleared")
             except Exception:
                 pass
+        cleared = 0
+        try:
+            for key in self.redis.scan_iter(match="hermes:lock:*", count=100):
+                key_str = key.decode() if isinstance(key, bytes) else key
+                if key_str == "hermes:lock":
+                    continue
+                value = self.redis.get(key_str)
+                if value is None:
+                    continue
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", errors="replace")
+                # Legacy format (just the rid, no kind prefix) → treat as
+                # belonging to whatever role we are. Safer to skip than to
+                # delete somebody else's lock; the bookkeeper will catch it
+                # when the TTL expires.
+                if ":" not in value:
+                    continue
+                kind, _, _ = value.partition(":")
+                if kind != my_kind:
+                    continue
+                if self.redis.delete(key_str):
+                    cleared += 1
+        except Exception:
+            log.exception("talos.startup_lock_sweep_failed")
+        if cleared:
+            log.warning(
+                "talos.startup_locks_cleared",
+                role=self.settings.role,
+                count=cleared,
+                note="Hermes bookkeeper will reclaim these as aborted_unsafe",
+            )
 
     # ── argus ────────────────────────────────────────────────────────────
 
@@ -626,6 +909,10 @@ class TalosRunner:
             project_info.get("verifier_model") or project_info.get("task_model")
         )
 
+        # Argus runs are inherently read-only; never let the auto-commit path
+        # write into the verifier's worktree.
+        ctx.auto_commit = False
+
         self._execute_task(ctx, argus_profile, task_info, argus_project_info, resource_limits)
 
     # ── Pythia (subscription oracle) ─────────────────────────────────────
@@ -653,6 +940,58 @@ class TalosRunner:
             "talos.pythia_started",
             refresh_seconds=self.settings.pythia_refresh_seconds,
         )
+
+
+def _detect_rate_limit(transcript_text: str) -> tuple[bool, str | None]:
+    """Scan a Claude Code stream-json transcript for an explicit rate-limit
+    rejection. Returns (was_rate_limited, retry_after_iso).
+
+    Ground truth from observed transcripts: the CLI emits
+    `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected",
+    "resetsAt":<unix epoch>,...}}` when the operator's 5h/7d window is
+    exhausted. `status` ∈ {`allowed`, `allowed_warning`, `rejected`} —
+    only the last is fatal. We pick the latest `resetsAt` from any
+    rejected event.
+
+    Bounded: we only look at JSON lines, and only for one specific event
+    type — cheap even on multi-MB transcripts.
+    """
+    if not transcript_text:
+        return (False, None)
+    rejected = False
+    latest_resets: int | None = None
+    for line in transcript_text.splitlines():
+        line = line.strip()
+        if not line.startswith("{") or '"rate_limit_event"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if obj.get("type") != "rate_limit_event":
+            continue
+        info = obj.get("rate_limit_info") or {}
+        if info.get("status") != "rejected":
+            continue
+        rejected = True
+        resets = info.get("resetsAt")
+        if isinstance(resets, (int, float)):
+            ts = int(resets)
+            if latest_resets is None or ts > latest_resets:
+                latest_resets = ts
+    if not rejected:
+        return (False, None)
+    if latest_resets is None:
+        # Fallback: if status was rejected but we couldn't read resetsAt,
+        # default to a 30-minute pause. Better to pause than to hammer.
+        from datetime import timedelta
+        return (
+            True,
+            (datetime.now(timezone.utc) + timedelta(minutes=30))
+            .replace(microsecond=0)
+            .isoformat(),
+        )
+    return (True, datetime.fromtimestamp(latest_resets, tz=timezone.utc).isoformat())
 
 
 def main() -> None:

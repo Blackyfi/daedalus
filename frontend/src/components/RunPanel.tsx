@@ -11,14 +11,25 @@ import {
   reportTranscriptFetchFailed,
 } from "../diagnostics";
 import DiffViewer from "./DiffViewer";
+import FailureOverlay from "./FailureOverlay";
 
 interface Props {
   runs: Run[];
   activeRun: Run | null;
   projectId: string;
+  onLoadOlder?: () => void;
+  canLoadOlder?: boolean;
+  loadingOlder?: boolean;
 }
 
-export default function RunPanel({ runs, activeRun, projectId }: Props) {
+export default function RunPanel({
+  runs,
+  activeRun,
+  projectId,
+  onLoadOlder,
+  canLoadOlder,
+  loadingOlder,
+}: Props) {
   const flash = useApp((s) => s.flash);
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -38,13 +49,20 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
   const [showDiff, setShowDiff] = useState(false);
   const [holdsInput, setHoldsInput] = useState<boolean>(false);
   const [heldBy, setHeldBy] = useState<string | null>(null);
+  const [failureRun, setFailureRun] = useState<Run | null>(null);
 
   // Set up xterm once.
   useEffect(() => {
     if (!containerRef.current || termRef.current) return;
+    // Drop to 11 px on small viewports — at 12 px on a 360 px-wide phone
+    // each row only fits ~30 cols, well below the 80 the agent emits.
+    const initialFontSize =
+      typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches
+        ? 11
+        : 12;
     const term = new Terminal({
       fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
-      fontSize: 12,
+      fontSize: initialFontSize,
       theme: { background: "#0a0e14", foreground: "#e6edf3" },
       convertEol: true,
     });
@@ -54,16 +72,53 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
-    const onResize = () => {
-      fit.fit();
+
+    let resizeFrame = 0;
+    let lastDims: { rows: number; cols: number } | null = null;
+    const fitAndNotify = () => {
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
       const { rows, cols } = term;
+      if (
+        lastDims &&
+        lastDims.rows === rows &&
+        lastDims.cols === cols
+      ) {
+        return;
+      }
+      lastDims = { rows, cols };
       if (activeRun) {
         apiJson(`/api/v1/runs/${activeRun.id}/resize`, { rows, cols }).catch(() => {});
       }
     };
-    window.addEventListener("resize", onResize);
+    const scheduleFit = () => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(fitAndNotify);
+    };
+
+    // Watch the container itself, not just window — siblings reflowing
+    // (banner, plan card opening, mobile hamburger menu) need to re-fit
+    // the terminal, but they don't trigger a window resize.
+    const observer = new ResizeObserver(scheduleFit);
+    observer.observe(containerRef.current);
+    window.addEventListener("resize", scheduleFit);
+
+    // Bump font when the small-screen breakpoint flips and re-fit.
+    const mq = window.matchMedia("(max-width: 640px)");
+    const onMq = (e: MediaQueryListEvent) => {
+      term.options.fontSize = e.matches ? 11 : 12;
+      scheduleFit();
+    };
+    mq.addEventListener("change", onMq);
+
     return () => {
-      window.removeEventListener("resize", onResize);
+      cancelAnimationFrame(resizeFrame);
+      observer.disconnect();
+      window.removeEventListener("resize", scheduleFit);
+      mq.removeEventListener("change", onMq);
       term.dispose();
       termRef.current = null;
     };
@@ -238,6 +293,18 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
     ws.send(JSON.stringify({ t: "release" }));
   }
 
+  // Argus reports are written when the verifier finishes — for any non-
+  // terminal state the row simply doesn't exist yet, so don't ask (the
+  // 404 ends up as a "Failed to load resource" line in the browser
+  // console and reads like a bug). `failed`/`cancelled`/`aborted_unsafe`
+  // typically have no report either, but we still poke once to surface
+  // partial verdicts the verifier may have written before crashing.
+  const ARGUS_FETCH_STATES = new Set([
+    "completed",
+    "failed",
+    "cancelled",
+    "aborted_unsafe",
+  ]);
   const argus = useQuery<ArgusReport | null>({
     queryKey: ["argus", activeRun?.id],
     queryFn: async () => {
@@ -248,7 +315,10 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
         return null;
       }
     },
-    enabled: !!activeRun && activeRun.kind === "argus",
+    enabled:
+      !!activeRun &&
+      activeRun.kind === "argus" &&
+      ARGUS_FETCH_STATES.has(activeRun.state),
   });
 
   const snapshot = useQuery<Snapshot | null>({
@@ -319,9 +389,9 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
 
   return (
     <section className="panel">
-      <header className="mb-3 flex items-center justify-between">
+      <header className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-sm uppercase tracking-wide text-muted">Live runner</h2>
-        <div className="flex items-center gap-3 text-xs text-muted">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
           {usageLabel && <span>{usageLabel}</span>}
           <span>
             {activeRun
@@ -331,11 +401,11 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
         </div>
       </header>
 
-      <div className="grid grid-cols-3 gap-3">
-        <div className="col-span-2">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <div className="lg:col-span-2">
           <div
             ref={containerRef}
-            className="h-[420px] w-full rounded border border-border bg-bg p-2"
+            className="h-[60vh] min-h-[280px] max-h-[420px] w-full rounded border border-border bg-bg p-2 lg:h-[420px] lg:max-h-none"
           />
           {activeRun && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -391,56 +461,109 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
                 </button>
               )}
               {FAILED_STATES.has(activeRun.state) && (
-                <button
-                  className="btn btn-primary"
-                  onClick={() => retry.mutate(activeRun.id)}
-                  disabled={retry.isPending}
-                >
-                  {retry.isPending ? "Retrying…" : "Retry"}
-                </button>
+                <>
+                  <button
+                    className="btn"
+                    onClick={() => setFailureRun(activeRun)}
+                  >
+                    Why?
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => retry.mutate(activeRun.id)}
+                    disabled={retry.isPending}
+                  >
+                    {retry.isPending ? "Retrying…" : "Retry"}
+                  </button>
+                </>
               )}
             </div>
           )}
         </div>
 
-        <aside className="space-y-2">
-          <h3 className="text-xs uppercase tracking-wide text-muted">Recent runs</h3>
-          <div className="space-y-1">
-            {runs.slice(0, 12).map((r) => (
-              <div
-                key={r.id}
-                className={`rounded border border-border p-2 text-xs ${
-                  activeRun?.id === r.id ? "border-accent bg-panel2" : "bg-panel"
-                }`}
-              >
-                <button
-                  onClick={() => navigate(`/projects/${projectId}/runs/${r.id}`)}
-                  className="block w-full text-left hover:text-accent"
+        <aside className="space-y-2 lg:col-span-1">
+          <header className="flex items-baseline justify-between">
+            <h3 className="text-xs uppercase tracking-wide text-muted">
+              Recent runs
+            </h3>
+            <span className="text-[10px] text-muted">
+              {runs.length === 0
+                ? "none yet"
+                : `${runs.length} loaded`}
+            </span>
+          </header>
+          {/* Bounded scroll container so the sidebar height matches the
+              terminal next to it on large viewports and stays compact on
+              mobile. Native scrollbar appears once the list overflows. */}
+          <div className="max-h-[60vh] overflow-y-auto rounded border border-border bg-bg/40 p-1 lg:max-h-[420px]">
+            <div className="space-y-1">
+              {runs.length === 0 && (
+                <div className="rounded p-3 text-center text-xs text-muted">
+                  No runs yet — kick one off from the task board.
+                </div>
+              )}
+              {runs.map((r) => (
+                <div
+                  key={r.id}
+                  className={`rounded border border-border p-2 text-xs ${
+                    activeRun?.id === r.id ? "border-accent bg-panel2" : "bg-panel"
+                  }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span>
-                      {r.kind} · {r.id.slice(0, 8)}
-                      {r.retry_of && <span className="ml-1 text-muted">↻</span>}
-                    </span>
-                    <span className={`status-pill status-${r.state}`}>{r.state}</span>
-                  </div>
-                  <div className="text-[10px] text-muted mt-0.5">
-                    {r.started_at
-                      ? new Date(r.started_at).toLocaleString()
-                      : "not started"}
-                  </div>
-                </button>
-                {FAILED_STATES.has(r.state) && (
                   <button
-                    className="btn mt-1 w-full text-[10px]"
-                    onClick={() => retry.mutate(r.id)}
-                    disabled={retry.isPending}
+                    onClick={() => navigate(`/projects/${projectId}/runs/${r.id}`)}
+                    className="block w-full text-left hover:text-accent"
                   >
-                    {retry.isPending ? "Retrying…" : "Retry"}
+                    <div className="flex items-center justify-between">
+                      <span>
+                        {r.kind} · {r.id.slice(0, 8)}
+                        {r.retry_of && <span className="ml-1 text-muted">↻</span>}
+                      </span>
+                      <span className={`status-pill status-${r.state}`}>
+                        {r.was_rate_limited ? "rate-limited" : r.state}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-muted mt-0.5">
+                      {r.started_at
+                        ? new Date(r.started_at).toLocaleString()
+                        : "not started"}
+                    </div>
                   </button>
-                )}
-              </div>
-            ))}
+                  {FAILED_STATES.has(r.state) && (
+                    <div className="mt-1 flex gap-1">
+                      <button
+                        className="btn flex-1 text-xs justify-center md:text-[10px]"
+                        onClick={() => setFailureRun(r)}
+                        title="Show failure reason"
+                      >
+                        Why?
+                      </button>
+                      <button
+                        className="btn flex-1 text-xs justify-center md:text-[10px]"
+                        onClick={() => retry.mutate(r.id)}
+                        disabled={retry.isPending}
+                      >
+                        {retry.isPending ? "Retrying…" : "Retry"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {canLoadOlder && onLoadOlder && (
+                <button
+                  className="btn w-full justify-center text-xs"
+                  onClick={onLoadOlder}
+                  disabled={loadingOlder}
+                  title="Fetch older runs from the server"
+                >
+                  {loadingOlder ? "Loading…" : "Load older runs"}
+                </button>
+              )}
+              {!canLoadOlder && runs.length >= 50 && (
+                <div className="px-2 py-1 text-center text-[10px] text-muted">
+                  End of history
+                </div>
+              )}
+            </div>
           </div>
         </aside>
       </div>
@@ -462,7 +585,9 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
                   <span className="tag">{f.category}</span>
                   <span>{f.description}</span>
                   {f.evidence && (
-                    <pre className="mt-1 overflow-x-auto text-[10px] text-muted">{f.evidence}</pre>
+                    <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words text-[11px] text-muted sm:text-[10px]">
+                      {f.evidence}
+                    </pre>
                   )}
                 </li>
               ))}
@@ -485,7 +610,7 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
               close
             </button>
           </header>
-          <pre className="max-h-[400px] overflow-auto text-xs text-muted whitespace-pre-wrap">
+          <pre className="max-h-[60vh] overflow-auto text-xs text-muted whitespace-pre-wrap sm:max-h-[400px]">
             {transcriptText}
           </pre>
         </div>
@@ -503,6 +628,13 @@ export default function RunPanel({ runs, activeRun, projectId }: Props) {
           </header>
           <DiffViewer patch={diffText} />
         </div>
+      )}
+
+      {failureRun && (
+        <FailureOverlay
+          run={failureRun}
+          onClose={() => setFailureRun(null)}
+        />
       )}
     </section>
   );

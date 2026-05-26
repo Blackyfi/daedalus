@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Connector,
@@ -114,20 +114,41 @@ export default function DiscoverModal({ open, onClose, connectors }: Props) {
     register.mutate(entries);
   }
 
+  // Close on Escape — phones cannot tap a 28 px close button reliably,
+  // and the previous behaviour swallowed the keypress.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4">
-      <div className="panel w-full max-w-4xl max-h-[85vh] flex flex-col">
-        <header className="mb-3 flex items-center justify-between">
-          <div>
-            <h2 className="text-sm uppercase tracking-wide text-muted">Discover repos</h2>
-            <p className="text-xs text-muted mt-0.5">
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-2 sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="discover-title"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="panel flex w-full max-h-[90vh] max-w-4xl flex-col sm:max-h-[85vh]">
+        <header className="mb-3 flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h2 id="discover-title" className="text-sm uppercase tracking-wide text-muted">
+              Discover repos
+            </h2>
+            <p className="mt-0.5 hidden text-xs text-muted sm:block">
               Walks the workspaces root for git repos. Pick which to register
               as Daedalus projects.
             </p>
           </div>
-          <button className="btn" onClick={onClose}>
+          <button className="btn shrink-0" onClick={onClose} aria-label="Close">
             close
           </button>
         </header>
@@ -171,8 +192,8 @@ export default function DiscoverModal({ open, onClose, connectors }: Props) {
               <span className="ml-auto text-muted">{selectedCount} selected</span>
             </div>
 
-            <div className="overflow-y-auto flex-1 -mx-2 px-2">
-              <table className="w-full text-xs">
+            <div className="-mx-2 flex-1 overflow-auto px-2">
+              <table className="w-full min-w-[720px] text-xs">
                 <thead className="sticky top-0 bg-panel">
                   <tr className="text-left text-muted">
                     <th className="py-1 pr-2 w-8"></th>
@@ -201,6 +222,7 @@ export default function DiscoverModal({ open, onClose, connectors }: Props) {
                         <td className="py-1 pr-2">
                           <input
                             type="checkbox"
+                            className="h-4 w-4 cursor-pointer accent-accent md:h-3.5 md:w-3.5"
                             checked={pick.selected}
                             disabled={r.already_registered}
                             onChange={(e) =>
@@ -209,6 +231,7 @@ export default function DiscoverModal({ open, onClose, connectors }: Props) {
                                 [r.path]: { ...pick, selected: e.target.checked },
                               }))
                             }
+                            aria-label={`Select ${r.relative_path}`}
                           />
                         </td>
                         <td className="py-1 pr-2 font-mono">{r.relative_path}</td>
@@ -269,12 +292,12 @@ export default function DiscoverModal({ open, onClose, connectors }: Props) {
               </table>
             </div>
 
-            <footer className="mt-3 flex items-center justify-end gap-2">
-              <button className="btn" onClick={onClose}>
+            <footer className="mt-3 flex flex-col-reverse items-stretch justify-end gap-2 sm:flex-row sm:items-center">
+              <button className="btn w-full sm:w-auto" onClick={onClose}>
                 cancel
               </button>
               <button
-                className="btn btn-primary"
+                className="btn btn-primary w-full sm:w-auto"
                 onClick={submit}
                 disabled={register.isPending || selectedCount === 0}
               >

@@ -1,55 +1,84 @@
-# Python bytecode
+# --- python ---
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-
-# Distribution / packaging
-.Python
-build/
-dist/
 *.egg-info/
-.eggs/
-
-# Virtual environments
 .venv/
 venv/
-env/
-
-# Test / coverage artifacts
 .pytest_cache/
+.mypy_cache/
 .ruff_cache/
+.tox/
 .coverage
 .coverage.*
 htmlcov/
-.tox/
-.nox/
+coverage.xml
 
-# IDE / editor
+# --- node ---
+node_modules/
+dist/
+.vite/
+.turbo/
+.parcel-cache/
+*.tsbuildinfo
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- env / secrets ---
+# All env files are private; the committed example sets the contract.
+.env
+.env.*
+!.env.example
+deploy/secrets/*
+!deploy/secrets/.gitkeep
+!deploy/secrets/README.md
+deploy/workspaces/*
+!deploy/workspaces/.gitkeep
+deploy/data/
+
+# Cert/key material — defence in depth. CA bundles, server certs, OAuth
+# tokens etc. live in deploy/secrets/ (already ignored above); these
+# globs catch anything that escapes that directory.
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+*.csr
+
+# Local dev databases.
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+
+# --- editor / os ---
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# OS
+*.bak
+*.orig
 .DS_Store
 Thumbs.db
 
-# Node
-node_modules/
-frontend/node_modules/
-frontend/dist/
-.next/
-.turbo/
+# --- runtime artefacts ---
+# Talos creates per-run git worktrees at <workspace>/runs/<run_id>; when
+# the daedalus repo IS the workspace, those land here. Never to be
+# committed — they're transient working trees.
+runs/
+# A writability probe occasionally drops this on the workspace root.
+test_write_root
 
-# Logs
+# --- build / log artefacts ---
 *.log
-
-# Daedalus: auto-appended compiled-artefact patterns
-.mypy_cache/
-.nuxt/
-target/
-.gradle/
-*.class
-*.o
-*.dylib
+*.pid
+*.sock
+*.tar.gz
+*.tar
+*.tgz
+frontend/vite.config.js
+frontend/vite.config.d.ts

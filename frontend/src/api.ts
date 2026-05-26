@@ -58,94 +58,11 @@ export interface Project {
   verifier_model: string | null;
   argus_enabled: boolean;
   wall_clock_minutes_override: number | null;
-  auto_run_quiet_hours_start: number | null;
-  auto_run_quiet_hours_end: number | null;
-  auto_run_daily_cap: number;
-  auto_run_concurrency_cap: number;
-  auto_run_hourly_cap: number;
-  auto_run_allowed_connectors: string[];
-  auto_run_eligible_statuses: TaskStatusValue[];
   created_at: string;
   updated_at: string;
+  rate_limit_paused_until?: string | null;
+  rate_limit_paused_reason?: string | null;
 }
-
-export type TaskStatusValue =
-  | "backlog"
-  | "ready"
-  | "in_progress"
-  | "verifying"
-  | "needs_fixes"
-  | "done"
-  | "cancelled";
-
-// Auto-run config + derived state for the AutoRunPanel.
-export interface AutoRunRecentRun {
-  id: string;
-  task_id: string | null;
-  task_title: string | null;
-  state: Run["state"];
-  kind: Run["kind"];
-  started_at: string | null;
-  finished_at: string | null;
-  auto_triggered: boolean;
-  created_at: string;
-}
-
-export interface AutoRunStatus {
-  project_id: string;
-  enabled: boolean;
-  max_fix_loops: number;
-  wall_clock_minutes_override: number | null;
-  default_connector_id: string | null;
-  auto_run_quiet_hours_start: number | null;
-  auto_run_quiet_hours_end: number | null;
-  auto_run_daily_cap: number;
-  auto_run_concurrency_cap: number;
-  auto_run_hourly_cap: number;
-  auto_run_allowed_connectors: string[];
-  auto_run_eligible_statuses: TaskStatusValue[];
-  // Legacy alias for auto_run_eligible_statuses — preserved for older
-  // clients that look up the readonly list under this name.
-  eligible_task_statuses: TaskStatusValue[];
-  in_quiet_hours: boolean;
-  runs_today: number;
-  runs_last_hour: number;
-  active_auto_runs: number;
-  daily_cap_remaining: number | null;
-  hourly_cap_remaining: number | null;
-  concurrency_remaining: number | null;
-  recent_runs: AutoRunRecentRun[];
-}
-
-export interface AutoRunConfigPatch {
-  auto_run_fix?: boolean;
-  max_fix_loops?: number;
-  wall_clock_minutes_override?: number | null;
-  default_connector_id?: string | null;
-  auto_run_quiet_hours_start?: number | null;
-  auto_run_quiet_hours_end?: number | null;
-  auto_run_daily_cap?: number;
-  auto_run_concurrency_cap?: number;
-  auto_run_hourly_cap?: number;
-  auto_run_allowed_connectors?: string[];
-  auto_run_eligible_statuses?: TaskStatusValue[];
-}
-
-// Org-wide auto-run defaults surfaced on the Account/admin page.
-export interface AutoRunDefaults {
-  enabled: boolean;
-  max_fix_loops: number;
-  daily_cap: number;
-  hourly_cap: number;
-  concurrency_cap: number;
-  quiet_hours_start: number | null;
-  quiet_hours_end: number | null;
-  eligible_statuses: TaskStatusValue[];
-  allowed_connectors: string[];
-  updated_at: string;
-}
-
-export type AutoRunDefaultsPatch = Partial<Omit<AutoRunDefaults, "updated_at">>;
 
 // Anthropic models surfaced in the project settings dropdowns. Keep in sync
 // with what's actually available to the operator's `claude` CLI / LiteLLM.
@@ -194,37 +111,6 @@ export interface Idea {
 export const updateIdea = (id: string, text: string): Promise<Idea> =>
   apiJson<Idea>(`/api/v1/ideas/${id}`, { text }, { method: "PATCH" });
 
-// Project-idea — sits on the Projects page, *above* the per-project ideas.
-// `new` becomes `promoted` when the user converts it into a real project.
-export type ProjectIdeaStatus = "new" | "promoted" | "archived";
-
-export interface ProjectIdea {
-  id: string;
-  owner_id: string;
-  text: string;
-  tags: string[];
-  status: ProjectIdeaStatus;
-  promoted_project_id: string | null;
-  sort_index: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export const updateProjectIdea = (
-  id: string,
-  patch: { text?: string; tags?: string[]; status?: ProjectIdeaStatus },
-): Promise<ProjectIdea> =>
-  apiJson<ProjectIdea>(`/api/v1/project-ideas/${id}`, patch, { method: "PATCH" });
-
-export interface ProjectIdeaPromoteIn {
-  name: string;
-  description?: string | null;
-  workspace_path: string;
-  git_default_branch?: string;
-  default_connector_id?: string | null;
-  init_git?: boolean;
-}
-
 export interface Note {
   id: string;
   project_id: string;
@@ -241,6 +127,13 @@ export interface Connector {
   spec: Record<string, any>;
   schema_version: number;
   enabled: boolean;
+  force_project_overrides: boolean;
+  override_planning_model: string | null;
+  override_task_model: string | null;
+  override_verifier_model: string | null;
+  override_wall_clock_minutes: number | null;
+  override_argus_enabled: boolean | null;
+  override_max_fix_loops: number | null;
 }
 
 export interface Run {
@@ -264,6 +157,8 @@ export interface Run {
   token_output: number | null;
   cost_usd_micros: number | null;
   retry_of: string | null;
+  was_rate_limited?: boolean;
+  retry_after?: string | null;
 }
 
 export interface ArgusReport {
@@ -340,11 +235,6 @@ export interface AuditEvent {
   payload: Record<string, any>;
 }
 
-// Static config surfaced to the SPA (workspaces root for path auto-suggest, etc).
-export interface SystemConfig {
-  workspaces_root: string;
-}
-
 // Pythia subscription snapshot (cached, refreshed by Talos every PYTHIA_REFRESH_SECONDS).
 export interface SubscriptionInfo {
   kind:
@@ -397,28 +287,13 @@ export interface ProjectStats {
   >;
   total: number;
   last_activity_at: string | null;
+  // Wall-clock seconds, averaged over tasks that landed in `done` within the
+  // last 7 rolling days. `null` when no task has finished yet — render N/A.
+  avg_cycle_seconds_7d: number | null;
+  completed_in_window_7d: number;
 }
 
 export type ProjectStatsMap = Record<string, ProjectStats>;
-
-// Per-user notification preferences. Mirrors `UserNotificationPref` —
-// when the user has no row yet the server fills the defaults so the UI
-// can hydrate with the same shape every time.
-export interface NotificationPrefs {
-  email_task_completed: boolean;
-  email_task_failed: boolean;
-  email_task_needs_fixes: boolean;
-  email_usage_threshold: boolean;
-  in_app_task_completed: boolean;
-  in_app_task_failed: boolean;
-  in_app_task_needs_fixes: boolean;
-  in_app_usage_threshold: boolean;
-  // Project cumulative spend ceiling in micro-USD (1 USD = 1_000_000).
-  // `null` disables the gate.
-  usage_threshold_micros: number | null;
-}
-
-export type NotificationPrefsPatch = Partial<NotificationPrefs>;
 
 // Git working-tree status — drives the "git pull required" banner.
 export interface GitStatusInfo {

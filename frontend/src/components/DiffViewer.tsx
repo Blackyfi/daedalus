@@ -1,9 +1,11 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { parsePatch } from "diff";
 
 interface Props {
   patch: string;
 }
+
+type Mode = "split" | "unified";
 
 type Row =
   | { kind: "context"; text: string; oldNum: number; newNum: number }
@@ -117,6 +119,22 @@ function buildFileBlocks(patch: string): FileBlock[] {
 
 export default function DiffViewer({ patch }: Props) {
   const files = useMemo(() => buildFileBlocks(patch), [patch]);
+  // Default to split on lg+ where two ~340-px code columns fit, unified
+  // otherwise. The user can flip the toggle either way.
+  const [mode, setMode] = useState<Mode>(() =>
+    typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches
+      ? "split"
+      : "unified",
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = (e: MediaQueryListEvent) => {
+      setMode(e.matches ? "split" : "unified");
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   if (!patch.trim()) {
     return <p className="text-xs text-muted">No changes against the default branch.</p>;
@@ -124,7 +142,7 @@ export default function DiffViewer({ patch }: Props) {
 
   if (files.length === 0) {
     return (
-      <pre className="max-h-[420px] overflow-auto whitespace-pre text-[11px] text-muted">
+      <pre className="max-h-[420px] overflow-auto whitespace-pre text-xs text-muted sm:text-[11px]">
         {patch}
       </pre>
     );
@@ -132,15 +150,34 @@ export default function DiffViewer({ patch }: Props) {
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-end gap-2 text-xs">
+        <span className="text-muted">view:</span>
+        <button
+          type="button"
+          onClick={() => setMode("unified")}
+          aria-pressed={mode === "unified"}
+          className={`btn ${mode === "unified" ? "btn-primary" : ""}`}
+        >
+          Unified
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("split")}
+          aria-pressed={mode === "split"}
+          className={`btn ${mode === "split" ? "btn-primary" : ""}`}
+        >
+          Split
+        </button>
+      </div>
       {files.map((file, fi) => (
         <article key={fi} className="rounded border border-border bg-bg">
           <header className="flex items-center justify-between border-b border-border bg-panel2 px-3 py-1.5 text-xs">
-            <span className="font-mono">
+            <span className="break-all font-mono">
               {file.oldName === file.newName
                 ? file.newName
                 : `${file.oldName} → ${file.newName}`}
             </span>
-            <span className="text-muted">
+            <span className="shrink-0 text-muted">
               {file.hunks.reduce((acc, h) => acc + h.rows.length, 0)} rows
             </span>
           </header>
@@ -148,20 +185,22 @@ export default function DiffViewer({ patch }: Props) {
             {file.hunks.map((hunk, hi) => (
               <table
                 key={hi}
-                className="w-full border-collapse font-mono text-[11px]"
+                className="w-full border-collapse font-mono text-xs sm:text-[11px]"
               >
                 <tbody>
                   <tr>
                     <td
-                      colSpan={4}
-                      className="bg-panel2 px-3 py-1 text-muted text-[10px]"
+                      colSpan={mode === "split" ? 4 : 3}
+                      className="bg-panel2 px-3 py-1 text-[11px] text-muted"
                     >
                       {hunk.header}
                     </td>
                   </tr>
-                  {hunk.rows.map((row, ri) => (
-                    <DiffRow key={ri} row={row} />
-                  ))}
+                  {mode === "split"
+                    ? hunk.rows.map((row, ri) => (
+                        <DiffRowSplit key={ri} row={row} />
+                      ))
+                    : hunk.rows.flatMap((row, ri) => unifiedRowsFor(row, ri))}
                 </tbody>
               </table>
             ))}
@@ -172,46 +211,105 @@ export default function DiffViewer({ patch }: Props) {
   );
 }
 
-function DiffRow({ row }: { row: Row }) {
-  const gutter = "w-10 select-none px-2 text-right text-muted text-[10px] align-top";
-  const cell = "px-3 py-0.5 align-top whitespace-pre-wrap break-all";
+const gutterCls =
+  "w-10 select-none px-2 text-right text-muted text-[11px] sm:text-[10px] align-top";
+const cellCls = "px-3 py-0.5 align-top whitespace-pre-wrap break-all";
 
+function DiffRowSplit({ row }: { row: Row }) {
   if (row.kind === "context") {
     return (
       <tr>
-        <td className={gutter}>{row.oldNum}</td>
-        <td className={cell}>{row.text || " "}</td>
-        <td className={gutter}>{row.newNum}</td>
-        <td className={cell}>{row.text || " "}</td>
+        <td className={gutterCls}>{row.oldNum}</td>
+        <td className={cellCls}>{row.text || " "}</td>
+        <td className={gutterCls}>{row.newNum}</td>
+        <td className={cellCls}>{row.text || " "}</td>
       </tr>
     );
   }
   if (row.kind === "delete") {
     return (
       <tr>
-        <td className={gutter}>{row.oldNum}</td>
-        <td className={`${cell} bg-red-950/40 text-red-200`}>{row.text || " "}</td>
-        <td className={gutter}></td>
-        <td className={cell}></td>
+        <td className={gutterCls}>{row.oldNum}</td>
+        <td className={`${cellCls} bg-red-950/40 text-red-200`}>{row.text || " "}</td>
+        <td className={gutterCls}></td>
+        <td className={cellCls}></td>
       </tr>
     );
   }
   if (row.kind === "insert") {
     return (
       <tr>
-        <td className={gutter}></td>
-        <td className={cell}></td>
-        <td className={gutter}>{row.newNum}</td>
-        <td className={`${cell} bg-emerald-950/40 text-emerald-200`}>{row.text || " "}</td>
+        <td className={gutterCls}></td>
+        <td className={cellCls}></td>
+        <td className={gutterCls}>{row.newNum}</td>
+        <td className={`${cellCls} bg-emerald-950/40 text-emerald-200`}>
+          {row.text || " "}
+        </td>
       </tr>
     );
   }
   return (
     <tr>
-      <td className={gutter}>{row.oldNum}</td>
-      <td className={`${cell} bg-red-950/40 text-red-200`}>{row.oldText || " "}</td>
-      <td className={gutter}>{row.newNum}</td>
-      <td className={`${cell} bg-emerald-950/40 text-emerald-200`}>{row.newText || " "}</td>
+      <td className={gutterCls}>{row.oldNum}</td>
+      <td className={`${cellCls} bg-red-950/40 text-red-200`}>{row.oldText || " "}</td>
+      <td className={gutterCls}>{row.newNum}</td>
+      <td className={`${cellCls} bg-emerald-950/40 text-emerald-200`}>
+        {row.newText || " "}
+      </td>
     </tr>
   );
+}
+
+function unifiedRow(
+  key: string,
+  oldNum: number | "",
+  newNum: number | "",
+  marker: " " | "+" | "-",
+  text: string,
+  rowCls: string,
+): JSX.Element {
+  return (
+    <tr key={key}>
+      <td className={gutterCls}>{oldNum}</td>
+      <td className={gutterCls}>{newNum}</td>
+      <td className={`${cellCls} ${rowCls}`}>
+        <span className="select-none pr-1 text-muted">{marker}</span>
+        {text || " "}
+      </td>
+    </tr>
+  );
+}
+
+function unifiedRowsFor(row: Row, ri: number): JSX.Element[] {
+  if (row.kind === "context") {
+    return [unifiedRow(`${ri}-c`, row.oldNum, row.newNum, " ", row.text, "")];
+  }
+  if (row.kind === "delete") {
+    return [
+      unifiedRow(`${ri}-d`, row.oldNum, "", "-", row.text, "bg-red-950/40 text-red-200"),
+    ];
+  }
+  if (row.kind === "insert") {
+    return [
+      unifiedRow(
+        `${ri}-i`,
+        "",
+        row.newNum,
+        "+",
+        row.text,
+        "bg-emerald-950/40 text-emerald-200",
+      ),
+    ];
+  }
+  return [
+    unifiedRow(`${ri}-d`, row.oldNum, "", "-", row.oldText, "bg-red-950/40 text-red-200"),
+    unifiedRow(
+      `${ri}-i`,
+      "",
+      row.newNum,
+      "+",
+      row.newText,
+      "bg-emerald-950/40 text-emerald-200",
+    ),
+  ];
 }

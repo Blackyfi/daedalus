@@ -9,6 +9,22 @@ set -euo pipefail
 
 ROLE="${ROLE:-api}"
 
+# If the operator's SSH config is bind-mounted at /mnt/host-ssh, copy it
+# into the runtime user's $HOME/.ssh and rewrite ownership. OpenSSH
+# refuses to use config/key files whose owner is neither root nor the
+# current uid; the bind-mount preserves host ownership (typically uid
+# 1000) which doesn't match root. A copy-then-chown sidesteps the rule
+# without forcing the api/hermes containers off root. Idempotent.
+if [[ -d /mnt/host-ssh ]]; then
+    target_home="${HOME:-/root}"
+    mkdir -p "${target_home}/.ssh"
+    chmod 700 "${target_home}/.ssh"
+    cp -rL /mnt/host-ssh/. "${target_home}/.ssh/" 2>/dev/null || true
+    chown -R "$(id -u):$(id -g)" "${target_home}/.ssh"
+    chmod 600 "${target_home}/.ssh"/* 2>/dev/null || true
+    find "${target_home}/.ssh" -name '*.pub' -exec chmod 644 {} + 2>/dev/null || true
+fi
+
 case "$ROLE" in
     api)
         if [[ "${DAEDALUS_AUTO_MIGRATE:-true}" == "true" ]]; then

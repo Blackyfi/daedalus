@@ -1,9 +1,11 @@
 """Project CRUD."""
 from __future__ import annotations
 
+import json
 import os
 import uuid
-from typing import Annotated, Any
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, Any, Iterable
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
@@ -14,10 +16,66 @@ from daedalus.auth.audit import record
 from daedalus.auth.dependencies import current_user
 from daedalus.core.settings import get_settings
 from daedalus.db.base import get_session
-from daedalus.db.models import Project, Role, Task, TaskStatus, User
+from daedalus.db.models import Project, Role, Run, Task, TaskStatus, User
+from daedalus.db.redis import get_redis
 from daedalus.git_status import GitStatus, get_status as get_git_status
 
 router = APIRouter()
+
+
+async def _attach_rate_limit_pause(projects: Iterable[Project]) -> None:
+    """Surface per-connector rate-limit pause state from Redis onto each
+    Project instance as ad-hoc Python attributes. Pydantic's from_attributes
+    serialization picks them up into ProjectOut.
+
+    Cheap: one MGET for all connectors used. Falls through to None on any
+    Redis hiccup so the project endpoint still works.
+    """
+    project_list = list(projects)
+    if not project_list:
+        return
+    connectors = {
+        p.default_connector_id for p in project_list if p.default_connector_id
+    }
+    if not connectors:
+        for p in project_list:
+            p.rate_limit_paused_until = None
+            p.rate_limit_paused_reason = None
+        return
+    keys = [f"daedalus:connector_paused:{cid}" for cid in connectors]
+    try:
+        redis = get_redis()
+        raw_values = await redis.mget(*keys)
+    except Exception:
+        for p in project_list:
+            p.rate_limit_paused_until = None
+            p.rate_limit_paused_reason = None
+        return
+    state: dict[str, tuple[datetime | None, str | None]] = {}
+    for cid, raw in zip(connectors, raw_values):
+        if not raw:
+            state[cid] = (None, None)
+            continue
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw)
+            retry_after_iso = payload.get("retry_after")
+            retry_after = (
+                datetime.fromisoformat(retry_after_iso) if retry_after_iso else None
+            )
+            reason = (
+                f"Claude rate limit hit at {payload.get('hit_at')} — "
+                f"resumes {retry_after_iso}"
+            )
+        except Exception:
+            retry_after = None
+            reason = "Claude rate limit (parse error)"
+        state[cid] = (retry_after, reason)
+    for p in project_list:
+        ra, reason = state.get(p.default_connector_id or "", (None, None))
+        p.rate_limit_paused_until = ra
+        p.rate_limit_paused_reason = reason
 
 
 def _canonicalize_workspace(path: str) -> str:
@@ -38,7 +96,9 @@ async def list_projects(
     if user.role != Role.owner:
         stmt = stmt.where(Project.owner_id == user.id)
     res = await db.execute(stmt.order_by(Project.created_at.desc()))
-    return res.scalars().all()
+    projects = list(res.scalars().all())
+    await _attach_rate_limit_pause(projects)
+    return projects
 
 
 @router.get("/stats")
@@ -63,6 +123,8 @@ async def project_stats(
             "by_status": {s.value: 0 for s in TaskStatus},
             "total": 0,
             "last_activity_at": None,
+            "avg_cycle_seconds_7d": None,
+            "completed_in_window_7d": 0,
         }
         for pid in visible_ids
     }
@@ -93,6 +155,48 @@ async def project_stats(
     for project_id, last_at in last_rows.all():
         bucket = out[str(project_id)]
         bucket["last_activity_at"] = last_at.isoformat() if last_at is not None else None
+
+    # 7-day rolling avg cycle time per task = max(run.finished_at) - min(run.started_at)
+    # over runs attached to that task, averaged across tasks that landed in
+    # `done` within the last 7 days. Empty windows stay None so the SPA can
+    # render N/A without doing the math itself.
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    per_task_dur = (
+        select(
+            Task.project_id.label("project_id"),
+            (
+                func.extract(
+                    "epoch",
+                    func.max(Run.finished_at) - func.min(Run.started_at),
+                )
+            ).label("dur_seconds"),
+        )
+        .join(Run, Run.task_id == Task.id)
+        .where(
+            Task.project_id.in_(visible_ids),
+            Task.status == TaskStatus.done,
+            Task.updated_at >= since,
+            Run.started_at.is_not(None),
+            Run.finished_at.is_not(None),
+        )
+        .group_by(Task.project_id, Task.id)
+        .subquery()
+    )
+    avg_rows = await db.execute(
+        select(
+            per_task_dur.c.project_id,
+            func.avg(per_task_dur.c.dur_seconds),
+            func.count(per_task_dur.c.dur_seconds),
+        )
+        .where(per_task_dur.c.dur_seconds > 0)
+        .group_by(per_task_dur.c.project_id)
+    )
+    for project_id, avg_seconds, sample_count in avg_rows.all():
+        bucket = out[str(project_id)]
+        bucket["avg_cycle_seconds_7d"] = (
+            float(avg_seconds) if avg_seconds is not None else None
+        )
+        bucket["completed_in_window_7d"] = int(sample_count or 0)
 
     return out
 
@@ -170,13 +274,6 @@ async def create_project(
         verifier_model=body.verifier_model,
         argus_enabled=body.argus_enabled,
         wall_clock_minutes_override=body.wall_clock_minutes_override,
-        auto_run_quiet_hours_start=body.auto_run_quiet_hours_start,
-        auto_run_quiet_hours_end=body.auto_run_quiet_hours_end,
-        auto_run_daily_cap=body.auto_run_daily_cap,
-        auto_run_concurrency_cap=body.auto_run_concurrency_cap,
-        auto_run_hourly_cap=body.auto_run_hourly_cap,
-        auto_run_allowed_connectors=list(body.auto_run_allowed_connectors),
-        auto_run_eligible_statuses=[s.value for s in body.auto_run_eligible_statuses],
     )
     db.add(proj)
     await db.flush()
@@ -205,7 +302,9 @@ async def get_project(
     user: Annotated[User, Depends(current_user)],
     db: AsyncSession = Depends(get_session),
 ):
-    return await _get_project_or_404(db, pid, user)
+    proj = await _get_project_or_404(db, pid, user)
+    await _attach_rate_limit_pause([proj])
+    return proj
 
 
 @router.patch("/{pid}", response_model=ProjectOut)
@@ -218,12 +317,6 @@ async def patch_project(
 ):
     proj = await _get_project_or_404(db, pid, user)
     fields = body.model_dump(exclude_unset=True)
-    # TaskStatus list -> raw strings for ARRAY(Text). Other fields are POD.
-    if "auto_run_eligible_statuses" in fields and fields["auto_run_eligible_statuses"] is not None:
-        fields["auto_run_eligible_statuses"] = [
-            (s.value if hasattr(s, "value") else s)
-            for s in fields["auto_run_eligible_statuses"]
-        ]
     for k, v in fields.items():
         setattr(proj, k, v)
     await db.flush()
