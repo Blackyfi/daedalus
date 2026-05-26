@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from daedalus.api.schemas import ProjectIn, ProjectOut, ProjectPatch
 from daedalus.auth.audit import record
+from daedalus.costs import month_start
 from daedalus.auth.dependencies import current_user
 from daedalus.core.settings import get_settings
 from daedalus.db.base import get_session
@@ -125,12 +126,29 @@ async def project_stats(
             "last_activity_at": None,
             "avg_cycle_seconds_7d": None,
             "completed_in_window_7d": 0,
+            "cost_cap_usd_micros": None,
+            "month_cost_usd_micros": 0,
         }
         for pid in visible_ids
     }
 
     if not visible_ids:
         return out
+
+    # Monthly cost cap (config) + this calendar month's run spend per project,
+    # so the dashboard can render a "spent / cap" budget badge.
+    cap_rows = await db.execute(
+        select(Project.id, Project.monthly_cost_cap_usd_micros).where(Project.id.in_(visible_ids))
+    )
+    for project_id, cap in cap_rows.all():
+        out[str(project_id)]["cost_cap_usd_micros"] = int(cap) if cap is not None else None
+    spend_rows = await db.execute(
+        select(Run.project_id, func.coalesce(func.sum(Run.cost_usd_micros), 0))
+        .where(Run.project_id.in_(visible_ids), Run.created_at >= month_start())
+        .group_by(Run.project_id)
+    )
+    for project_id, spent in spend_rows.all():
+        out[str(project_id)]["month_cost_usd_micros"] = int(spent or 0)
 
     # Counts grouped by (project, status).
     count_rows = await db.execute(
@@ -274,6 +292,7 @@ async def create_project(
         verifier_model=body.verifier_model,
         argus_enabled=body.argus_enabled,
         wall_clock_minutes_override=body.wall_clock_minutes_override,
+        monthly_cost_cap_usd_micros=body.monthly_cost_cap_usd_micros,
     )
     db.add(proj)
     await db.flush()

@@ -50,6 +50,7 @@ class ProjectIn(BaseModel):
     verifier_model: str | None = Field(default=None, max_length=120)
     argus_enabled: bool = True
     wall_clock_minutes_override: int | None = Field(default=None, ge=1, le=1440)
+    monthly_cost_cap_usd_micros: int | None = Field(default=None, ge=0)
 
 
 class ProjectPatch(BaseModel):
@@ -65,6 +66,7 @@ class ProjectPatch(BaseModel):
     verifier_model: str | None = Field(default=None, max_length=120)
     argus_enabled: bool | None = None
     wall_clock_minutes_override: int | None = Field(default=None, ge=1, le=1440)
+    monthly_cost_cap_usd_micros: int | None = Field(default=None, ge=0)
 
 
 class ProjectOut(_Base):
@@ -83,6 +85,7 @@ class ProjectOut(_Base):
     verifier_model: str | None
     argus_enabled: bool
     wall_clock_minutes_override: int | None
+    monthly_cost_cap_usd_micros: int | None = None
     created_at: datetime
     updated_at: datetime
     # Surfaced from Redis when the default connector hit a Claude rate

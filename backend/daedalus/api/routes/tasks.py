@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from daedalus.api.schemas import RunOut, TaskIn, TaskOut, TaskPatch
 from daedalus.auth.audit import record
+from daedalus.costs import month_cost_usd_micros, over_cap
 from daedalus.auth.dependencies import current_user
 from daedalus.db.base import get_session
 from daedalus.db.models import (
@@ -68,6 +69,28 @@ async def _ensure_not_behind(project: Project, force: bool) -> None:
             ),
         },
     )
+
+
+async def _ensure_under_cost_cap(db: AsyncSession, project: Project) -> None:
+    """Block enqueue once the project's calendar-month run cost reaches its
+    configured cap. No-op when the project has no cap set."""
+    if project.monthly_cost_cap_usd_micros is None:
+        return
+    spent = await month_cost_usd_micros(db, project.id)
+    if over_cap(project.monthly_cost_cap_usd_micros, spent):
+        raise HTTPException(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            {
+                "kind": "cost_cap_reached",
+                "spent_usd_micros": spent,
+                "cap_usd_micros": project.monthly_cost_cap_usd_micros,
+                "message": (
+                    f"Project has spent ${spent / 1_000_000:.2f} of its "
+                    f"${project.monthly_cost_cap_usd_micros / 1_000_000:.2f} "
+                    "monthly cap. Raise or clear the cap to launch more runs."
+                ),
+            },
+        )
 
 
 @router.get("/projects/{pid}/tasks", response_model=list[TaskOut])
@@ -192,6 +215,7 @@ async def run_all_tasks(
     """
     project = await _project(db, pid, user)
     await _ensure_not_behind(project, force)
+    await _ensure_under_cost_cap(db, project)
     # Exclude tasks that already have an active task-run. `enqueue_task`
     # flips backlog→ready up-front, so without this guard a fast double-
     # click (or a stale UI) would happily double-enqueue every task.
@@ -266,6 +290,7 @@ async def run_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "task not found")
     project = await _project(db, task.project_id, user)
     await _ensure_not_behind(project, force)
+    await _ensure_under_cost_cap(db, project)
     if task.status in (TaskStatus.in_progress, TaskStatus.verifying):
         raise HTTPException(status.HTTP_409_CONFLICT, "task is already running")
     # status=ready can still mean "already queued" — enqueue_task flips the
