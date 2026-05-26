@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -81,7 +82,9 @@ async def verify(
     code_hash = _hmac(code) if code else None
     token_hash = _hmac(token) if token else None
     for otp in candidates:
-        if (code_hash and otp.code_hash == code_hash) or (token_hash and otp.magic_token_hash == token_hash):
+        code_match = bool(code_hash) and hmac.compare_digest(otp.code_hash, code_hash)
+        token_match = bool(token_hash) and hmac.compare_digest(otp.magic_token_hash, token_hash)
+        if code_match or token_match:
             otp.used_at = now
             await session.flush()
             return True

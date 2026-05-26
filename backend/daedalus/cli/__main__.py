@@ -13,7 +13,7 @@ from daedalus.auth.audit import record as audit_record
 from daedalus.auth.client_certs import mint_client_cert
 from daedalus.auth.passwords import hash_password
 from daedalus.auth.policy import policy_violations
-from daedalus.auth.totp import generate_recovery_codes, hash_recovery_code, new_totp_secret, provisioning_uri
+from daedalus.auth.totp import encrypt_secret, generate_recovery_codes, hash_recovery_code, new_totp_secret, provisioning_uri
 from daedalus.connectors.schema import CONNECTOR_SCHEMA
 from daedalus.db.base import get_session
 from daedalus.db.models import Connector, Role, User
@@ -162,7 +162,7 @@ async def _init_user(*, email: str, display_name: str, password: str, role: str)
             display_name=display_name,
             role=Role(role),
             password_hash=hash_password(password),
-            totp_secret=secret,
+            totp_secret=encrypt_secret(secret),
             totp_enrolled_at=None,
             recovery_codes_hash=[hash_recovery_code(code) for code in recovery_codes],
         )
@@ -320,7 +320,7 @@ async def _reset_totp(*, email: str, regen_recovery: bool, assume_yes: bool) -> 
             click.confirm("Continue?", abort=True)
 
         new_secret = new_totp_secret()
-        user.totp_secret = new_secret
+        user.totp_secret = encrypt_secret(new_secret)
         user.totp_enrolled_at = None
         user.failed_login_count = 0
         user.locked_until = None

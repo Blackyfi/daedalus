@@ -691,7 +691,7 @@ class HermesScheduler:
                 resp = await client.post(
                     internal_url,
                     json=payload,
-                    headers={"X-Daedalus-Internal-Key": self.settings.session_secret},
+                    headers={"X-Daedalus-Internal-Key": self.settings.internal_key},
                 )
                 if resp.status_code >= 400:
                     logger.error(
