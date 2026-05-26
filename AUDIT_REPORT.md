@@ -40,10 +40,16 @@ deploy state). Findings:
 | **M2 — TOTP secret stored plaintext** despite "encrypted at rest" comment. | 🟡 Medium | ✅ **Fixed** (`c44e331`) — Fernet encryption; existing owner secret migrated in-place, login verified intact |
 | L1 non-constant-time HMAC compares; L2 `discovery.py` register path not realpath-canonicalized; L3 `logout` hardcoded 7-day max_age. | 🟢 Low | ✅ **Fixed** (`c44e331`) |
 
-All audit findings (F1–F7, C1–C2, H1, M1–M2, L1–L3) are now resolved. The one
-remaining hardening note is that `TOTP_ENC_KEY` is left unset in production, so
-the TOTP-at-rest key derives from `PASSWORD_PEPPER` (documented; rotating the
-pepper requires `daedalus reset-totp`).
+All audit findings (F1–F7, C1–C2, H1, M1–M2, L1–L3) are now resolved.
+
+**Additional hardening (`7062bb0`):** the previously-unused `ip_ban_threshold`/
+`ip_ban_minutes` settings are now enforced — a Redis per-IP failure counter
+returns `429` once a source IP exceeds the threshold across any accounts
+(complements per-account lockout; verified live: 25× `401` then `429`).
+
+Remaining note: `TOTP_ENC_KEY` is left unset in production, so the TOTP-at-rest
+key derives from `PASSWORD_PEPPER` (documented; rotating the pepper requires
+`daedalus reset-totp`).
 
 Confirmed sound on review: session signing (HMAC, cert-bound, idle+hard expiry,
 revocation), the lease Lua claim (race-free) + heartbeat-on-lost-lease, orphan
