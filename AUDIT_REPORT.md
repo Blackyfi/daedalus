@@ -7,6 +7,28 @@
 
 ---
 
+## 0. Remediation status (updated 2026-05-26, after fixes)
+
+The findings below describe the state **at audit time**. They have since been
+remediated on `main`:
+
+| Finding | Status | Where |
+|---|---|---|
+| F1 Alembic chain corrupt | ✅ Fixed — single linear head, `upgrade head` from empty verified | commit `affe245` |
+| F2 Half-finished refactor (45 failing tests, dead notifications) | ✅ Fixed — removal completed, **94 tests pass** | `affe245` |
+| F3 notification-prefs path/route | ✅ Resolved by removal | `affe245` |
+| F4 `recharts` missing / frontend build | ✅ Fixed — deploy build green; recharts via `npm install` | `affe245` |
+| F6 Duplicate Vite config | ✅ Removed + gitignored | `affe245` |
+| (bonus) Unbounded fix-loop chains | ✅ Fixed — chain-depth cap + tests | `affe245` |
+| F5 mTLS header-trust | ✅ Documented (code + README); in-app verification still optional | commit `a120c74` |
+| CI gate (recommended) | ✅ Added (`.github/workflows/ci.yml`) | `a120c74` |
+| F7 Broad `except` sweep | ⏳ **Deliberately deferred** — needs a targeted pass on completion paths, not a blind bulk edit on a live system | — |
+
+The stack was rebuilt and redeployed; the API boots, runs `alembic upgrade head`
+cleanly, and responds healthy through Caddy.
+
+---
+
 ## 1. Executive summary
 
 Daedalus is a **substantial, genuinely-used, well-engineered system**: a self-hosted orchestrator for local AI coding agents with project-scoped task graphs, single-runner-per-project leasing, live PTY mirroring, LLM-based verification (Argus), idea→plan→task review, batch merging, and 3-factor + mTLS auth. The deployed instance has handled **518 runs across 8 projects** and was used to develop itself.
