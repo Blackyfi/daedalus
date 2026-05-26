@@ -26,6 +26,25 @@ remediated on `main`:
 The stack was rebuilt and redeployed; the API boots, runs `alembic upgrade head`
 cleanly, and responds healthy through Caddy.
 
+### Second-pass audit (2026-05-26) — auth/security deep dive
+
+A deeper pass focused on auth-flow *logic* (the first pass covered build/test/
+deploy state). Findings:
+
+| Finding | Severity | Status |
+|---|---|---|
+| **C1 — `/auth/totp` was a standalone login** bypassing the password + email-OTP factors (no server-side step binding; `auth.py`). Brute-forceable TOTP → account takeover. | 🔴 Critical | ✅ **Fixed** (`1bf9117`) — Redis login-stage gate; verified live (direct `/totp` now rejected before code check) |
+| **C2 — no throttle on the email-OTP / TOTP steps** (only `/password` counted failures); `ip_ban_*` settings defined but unused. | 🔴 Critical | ✅ **Fixed** (`1bf9117`) — lockout applied to all steps; tests added |
+| **H1 — IDOR on merge-batch endpoints** (`merges.py:_load_project` has no ownership gate, unlike projects/tasks/runs). Latent: only 1 owner user today. | 🟠 High | ⏳ Open |
+| **M1 — `session_secret` reused as the internal-service API key** (`internal.py:22`), non-constant-time `!=`. | 🟡 Medium | ⏳ Open |
+| **M2 — TOTP secret stored plaintext** despite "encrypted at rest" comment (`models.py:138`). | 🟡 Medium | ⏳ Open |
+| L1 non-constant-time HMAC compares (`email_otp.py:84`, `totp.py:41`); L2 `discovery.py` register path not realpath-canonicalized (owner-only); L3 `logout` hardcoded 7-day max_age. | 🟢 Low | ⏳ Open |
+
+Confirmed sound on review: session signing (HMAC, cert-bound, idle+hard expiry,
+revocation), the lease Lua claim (race-free) + heartbeat-on-lost-lease, orphan
+recovery, ownership checks on projects/tasks/runs, the fix-loop chain cap, and
+no-secrets-in-logs.
+
 ---
 
 ## 1. Executive summary
