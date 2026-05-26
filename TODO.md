@@ -26,8 +26,12 @@ nice-to-have.
   (402 once the calendar-month run cost reaches the cap), surfaced in
   `/projects/stats` and editable from the Project Settings panel.
   `daedalus/costs.py` holds the month-spend/over-cap helpers.
-- [ ] **Connector hot-reload UI button.** Server-side hot-reload works
-  (§7.4); the SPA has no button to trigger it or display reload status.
+- [x] **Connector hot-reload UI button.** Done — `POST /connectors/reload`
+  (owner-only) re-imports the on-disk pack via the shared
+  `connectors/loader.py:import_connectors_from_dir` (also used by the
+  `import-connectors` CLI); the Connectors page has a "⟳ Reload pack" button
+  that surfaces the added/updated summary. Invalid specs abort with 400,
+  leaving the DB untouched.
 - [ ] **Audit-log anomaly detection (spec §15 phase 6).** Phase-6
   hardening.
 - [x] **vLLM container + `--profile llm`** — new `llm` service in
