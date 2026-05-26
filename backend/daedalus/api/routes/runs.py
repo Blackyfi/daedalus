@@ -167,6 +167,8 @@ async def diff_text(
         try:
             return get_object_store().get_text(run.diff_object_key)
         except Exception:
+            # Cached object missing/unreadable — fall through and recompute the
+            # diff from the worktree below.
             pass
 
     if not run.worktree_path:

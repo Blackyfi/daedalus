@@ -352,7 +352,10 @@ class HermesScheduler:
                         try:
                             await self.redis.delete(completion_key)
                         except Exception:
-                            pass
+                            logger.debug(
+                                "orphan_completion_key_delete_failed",
+                                run_id=str(run.id),
+                            )
                         continue
                     run.state = RunState.aborted_unsafe
                     run.finished_at = datetime.now(timezone.utc)

@@ -321,6 +321,8 @@ async def pty_stream(websocket: WebSocket, run_id: str) -> None:
             await state_pubsub.unsubscribe(state_chan)
             await state_pubsub.aclose()
         except Exception:
+            # Best-effort teardown on disconnect: the connection is already
+            # going away, so a failed unsubscribe/close is not actionable.
             pass
 
 
