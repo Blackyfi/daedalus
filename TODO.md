@@ -21,9 +21,11 @@ nice-to-have.
 
 ## Nice-to-haves
 
-- [ ] **Per-project token spend cap UI.** Parser + persistence shipped;
-  the cap field on `Project` and the UI to set/enforce it are still
-  TODO.
+- [x] **Per-project token spend cap UI.** Done — `Project.monthly_cost_cap_usd_micros`
+  (migration `20260526_0010`), enforced in the task-run + run-all endpoints
+  (402 once the calendar-month run cost reaches the cap), surfaced in
+  `/projects/stats` and editable from the Project Settings panel.
+  `daedalus/costs.py` holds the month-spend/over-cap helpers.
 - [ ] **Connector hot-reload UI button.** Server-side hot-reload works
   (§7.4); the SPA has no button to trigger it or display reload status.
 - [ ] **Audit-log anomaly detection (spec §15 phase 6).** Phase-6
