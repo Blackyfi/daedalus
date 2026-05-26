@@ -21,9 +21,38 @@ export default function ConnectorsPage() {
     onError: (err: any) => flash(err.message || "Toggle failed", "error"),
   });
 
+  // Re-import the on-disk connector pack into the DB (owner-only). Lets you
+  // drop edited specs into connectors/ and pick them up without a restart.
+  const reload = useMutation({
+    mutationFn: () =>
+      apiJson<{ imported: number; added: number; updated: number }>(
+        "/api/v1/connectors/reload",
+        {},
+      ),
+    onSuccess: (r) => {
+      flash(
+        `Reloaded connector pack: ${r.imported} spec${r.imported === 1 ? "" : "s"} (${r.added} added, ${r.updated} updated)`,
+        "success",
+      );
+      qc.invalidateQueries({ queryKey: ["connectors-all"] });
+      qc.invalidateQueries({ queryKey: ["connectors"] });
+    },
+    onError: (err: any) => flash(err.message || "Reload failed", "error"),
+  });
+
   return (
     <section className="panel">
-      <h2 className="mb-3 text-sm uppercase tracking-wide text-muted">Connectors</h2>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h2 className="text-sm uppercase tracking-wide text-muted">Connectors</h2>
+        <button
+          className="btn"
+          onClick={() => reload.mutate()}
+          disabled={reload.isPending}
+          title="Re-import the on-disk connector pack into the database"
+        >
+          {reload.isPending ? "Reloading…" : "⟳ Reload pack"}
+        </button>
+      </div>
       <div className="-mx-3 overflow-x-auto sm:-mx-4 lg:mx-0">
         <table className="w-full min-w-[640px] text-sm">
           <thead>

@@ -12,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from daedalus.api.schemas import ConnectorIn, ConnectorOut, ConnectorOverridesIn
 from daedalus.auth.audit import record
 from daedalus.auth.dependencies import current_user, require_role
+from daedalus.connectors.loader import ConnectorImportError, import_connectors_from_dir
 from daedalus.connectors.schema import CONNECTOR_SCHEMA
+from daedalus.core.settings import get_settings
 from daedalus.db.base import get_session
 from daedalus.db.models import Connector, Role, User
 
@@ -76,6 +78,29 @@ async def _set_enabled(db: AsyncSession, request: Request, user: User, cid: str,
     )
     await db.commit()
     return connector
+
+
+@router.post("/reload", dependencies=[Depends(require_role(Role.owner))])
+async def reload_connectors(
+    request: Request,
+    user: Annotated[User, Depends(current_user)],
+    db: AsyncSession = Depends(get_session),
+):
+    """Re-import the on-disk connector pack (`settings.connectors_dir`) into the
+    DB. Owner-only. New/edited specs go live without a restart; invalid specs
+    abort the whole reload (400) leaving the DB untouched."""
+    try:
+        summary = await import_connectors_from_dir(db, get_settings().connectors_dir)
+    except ConnectorImportError as exc:
+        await db.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    await record(
+        db, actor_user_id=user.id, actor_cert_fp=request.state.cert_fp,
+        action="connector.reload", target_kind="connector", target_id="*",
+        payload=summary,
+    )
+    await db.commit()
+    return summary
 
 
 @router.post("", response_model=ConnectorOut, status_code=status.HTTP_201_CREATED,
