@@ -109,6 +109,63 @@ def _register_auth_failure(user: User, settings) -> None:
         user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=settings.lockout_minutes)
 
 
+# --- IP-level throttle -------------------------------------------------------
+# Per-account lockout (above) stops single-account brute force. This bans a
+# *source IP* after ip_ban_threshold failed attempts across any accounts within
+# ip_ban_minutes — catching one host spraying many accounts and rate-limiting
+# blind hammering of the step gates. The IP comes from the proxy-set header
+# (see _ip); the "API only reachable via Caddy" invariant keeps it trustworthy.
+_IP_FAIL_PREFIX = "auth:ip_fail"
+
+
+def _coerce_count(raw) -> int:
+    if raw is None:
+        return 0
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode()
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _ip_throttled(ip: str | None) -> bool:
+    """True once this IP has exceeded ip_ban_threshold failures in the window.
+    Fails open on Redis errors — the per-account lockout still applies."""
+    if not ip:
+        return False
+    try:
+        raw = await get_redis().get(f"{_IP_FAIL_PREFIX}:{ip}")
+    except Exception:
+        return False
+    return _coerce_count(raw) >= get_settings().ip_ban_threshold
+
+
+async def _register_ip_failure(ip: str | None) -> None:
+    if not ip:
+        return
+    try:
+        r = get_redis()
+        cnt = await r.incr(f"{_IP_FAIL_PREFIX}:{ip}")
+        if cnt == 1:
+            await r.expire(f"{_IP_FAIL_PREFIX}:{ip}", get_settings().ip_ban_minutes * 60)
+    except Exception:
+        return
+
+
+async def _clear_ip_failures(ip: str | None) -> None:
+    if not ip:
+        return
+    try:
+        await get_redis().delete(f"{_IP_FAIL_PREFIX}:{ip}")
+    except Exception:
+        return
+
+
+def _too_many() -> HTTPException:
+    return HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many attempts; try again later")
+
+
 @router.post("/password", status_code=status.HTTP_202_ACCEPTED)
 async def step_password(
     body: PasswordIn,
@@ -118,6 +175,9 @@ async def step_password(
 ):
     """Step 1: verify password. On success issue an email OTP."""
     settings = get_settings()
+    ip = _ip(request)
+    if await _ip_throttled(ip):
+        raise _too_many()
     user = await _load_user(db, body.email)
 
     # Constant-ish failure path so timing doesn't disclose enrolment.
@@ -126,6 +186,7 @@ async def step_password(
             user.failed_login_count += 1
             if user.failed_login_count >= settings.lockout_threshold:
                 user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=settings.lockout_minutes)
+        await _register_ip_failure(ip)
         await audit.record(
             db, actor_user_id=getattr(user, "id", None), actor_ip=_ip(request),
             actor_cert_fp=cert_fp, action="auth.password_fail", target_kind="user",
@@ -163,17 +224,23 @@ async def step_email_otp(
     db: AsyncSession = Depends(get_session),
 ):
     settings = get_settings()
+    ip = _ip(request)
+    if await _ip_throttled(ip):
+        raise _too_many()
     user = await _load_user(db, body.email)
     if user is None or _locked(user):
+        await _register_ip_failure(ip)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid")
     # Step gate: the password step must have succeeded for this email. Rejected
-    # before any code check and without counting a failure, so a stage-less
-    # request can neither advance nor lock the account out.
+    # before any code check and without counting an *account* failure (no
+    # lockout-DoS), but the source IP is still counted to throttle hammering.
     if await _get_login_stage(body.email) != _LOGIN_STAGE_OTP:
+        await _register_ip_failure(ip)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid")
     ok = await email_otp.verify(db, user, code=body.code, token=body.token)
     if not ok:
         _register_auth_failure(user, settings)
+        await _register_ip_failure(ip)
         await audit.record(
             db, actor_user_id=user.id, actor_ip=_ip(request), actor_cert_fp=cert_fp,
             action="auth.otp_fail", target_kind="user", target_id=str(user.id),
@@ -200,14 +267,19 @@ async def step_totp(
 ):
     cert_fp = _resolve_cert_fp(cert_fp)
     settings = get_settings()
+    ip = _ip(request)
+    if await _ip_throttled(ip):
+        raise _too_many()
     user = await _load_user(db, body.email)
     if user is None or _locked(user) or not user.totp_secret:
+        await _register_ip_failure(ip)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid")
     # Step gate: the email-OTP step must have succeeded for this email. Without
     # this, /totp would be a standalone login and the 6-digit code would be
-    # brute-forceable. Rejected before the code check and without counting a
-    # failure (no lockout-DoS from stage-less requests).
+    # brute-forceable. Rejected before the code check; counted against the IP
+    # (not the account) so blind hammering is throttled without lockout-DoS.
     if await _get_login_stage(body.email) != _LOGIN_STAGE_TOTP:
+        await _register_ip_failure(ip)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid")
 
     totp_secret = totp.decrypt_secret(user.totp_secret)
@@ -216,6 +288,7 @@ async def step_totp(
         ok, remaining = totp.consume_recovery_code(user.recovery_codes_hash, body.code)
         if not ok:
             _register_auth_failure(user, settings)
+            await _register_ip_failure(ip)
             await audit.record(
                 db, actor_user_id=user.id, actor_ip=_ip(request), actor_cert_fp=cert_fp,
                 action="auth.totp_fail", target_kind="user", target_id=str(user.id),
@@ -230,6 +303,7 @@ async def step_totp(
         user.totp_secret = totp.encrypt_secret(totp_secret)
     user.failed_login_count = 0
     await _clear_login_stage(body.email)
+    await _clear_ip_failures(ip)
     if not user.pinned_cert_fingerprint:
         user.pinned_cert_fingerprint = cert_fp
     user.last_login_at = datetime.now(timezone.utc)
