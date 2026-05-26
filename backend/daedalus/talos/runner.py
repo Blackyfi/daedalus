@@ -458,6 +458,11 @@ class TalosRunner:
                     approx=True,
                 )
             except Exception:
+                # Best-effort live mirror: this fires per output chunk in a hot
+                # loop, so a transient Redis hiccup is dropped silently rather
+                # than flooding logs or stalling the PTY reader. The transcript
+                # is still captured in ctx.transcript_chunks and persisted on
+                # completion, so nothing is lost.
                 pass
 
         def streamer() -> None:
@@ -613,7 +618,7 @@ class TalosRunner:
             try:
                 ctx.session.close()
             except Exception:
-                pass
+                log.debug("talos.session_close_failed", run_id=ctx.run_id, exc_info=True)
         with ctx.transcript_lock:
             ctx.transcript_chunks = []
 
@@ -837,7 +842,7 @@ class TalosRunner:
                 self.redis.delete("hermes:lock")
                 log.info("talos.legacy_lock_cleared")
             except Exception:
-                pass
+                log.warning("talos.legacy_lock_clear_failed", exc_info=True)
         cleared = 0
         try:
             for key in self.redis.scan_iter(match="hermes:lock:*", count=100):

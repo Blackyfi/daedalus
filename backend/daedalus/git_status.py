@@ -89,7 +89,7 @@ async def _run_git(args: list[str], cwd: str, timeout: float) -> tuple[int, str,
         try:
             proc.kill()
         except Exception:
-            pass
+            logger.debug("git_status.proc_kill_failed", exc_info=True)
         return (-1, "", f"timeout after {timeout:.1f}s")
     rc = proc.returncode if proc.returncode is not None else -1
     return (rc, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace"))

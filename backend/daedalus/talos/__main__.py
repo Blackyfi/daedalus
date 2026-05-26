@@ -31,6 +31,8 @@ def main() -> None:
                 in_flight=len(runner.contexts),
             )
         except Exception:
+            # A logging failure inside the signal handler must never stop us
+            # from requesting shutdown — intentionally swallowed.
             pass
         runner.request_shutdown()
 
