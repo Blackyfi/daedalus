@@ -178,40 +178,22 @@ async def _init_user(*, email: str, display_name: str, password: str, role: str)
 
 
 async def _import_connectors(directory: Path) -> None:
-    files = sorted(path for path in directory.glob("*.json") if path.is_file())
-    if not files:
-        raise click.ClickException(f"no connector JSON files found in {directory}")
+    from daedalus.connectors.loader import ConnectorImportError, import_connectors_from_dir
 
-    validator = Draft202012Validator(CONNECTOR_SCHEMA)
-    imported = 0
-
+    summary: dict = {}
     async for db in get_session():
-        for file_path in files:
-            spec = json.loads(file_path.read_text())
-            errors = sorted(validator.iter_errors(spec), key=lambda error: list(error.path))
-            if errors:
-                msg = "; ".join(f"{'/'.join(map(str, err.path)) or '<root>'}: {err.message}" for err in errors)
-                raise click.ClickException(f"{file_path.name}: {msg}")
-
-            connector_id = spec["id"]
-            result = await db.execute(select(Connector).where(Connector.connector_id == connector_id))
-            connector = result.scalar_one_or_none()
-            if connector is None:
-                connector = Connector(
-                    connector_id=connector_id,
-                    display_name=spec.get("display_name", connector_id),
-                    spec=spec,
-                )
-                db.add(connector)
-            else:
-                connector.display_name = spec.get("display_name", connector_id)
-                connector.spec = spec
-            imported += 1
-
+        try:
+            summary = await import_connectors_from_dir(db, directory)
+        except ConnectorImportError as exc:
+            raise click.ClickException(str(exc)) from exc
         await db.commit()
         break
 
-    click.echo(f"imported {imported} connector(s) from {directory}")
+    click.echo(
+        f"imported {summary.get('imported', 0)} connector(s) "
+        f"({summary.get('added', 0)} added, {summary.get('updated', 0)} updated) "
+        f"from {directory}"
+    )
 
 
 async def _mint_client_cert(
