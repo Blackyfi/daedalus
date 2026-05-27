@@ -32,8 +32,19 @@ nice-to-have.
   `import-connectors` CLI); the Connectors page has a "⟳ Reload pack" button
   that surfaces the added/updated summary. Invalid specs abort with 400,
   leaving the DB untouched.
-- [ ] **Audit-log anomaly detection (spec §15 phase 6).** Phase-6
-  hardening.
+- [x] **Audit-log anomaly detection (spec §15 phase 6).** Done —
+  `daedalus/anomaly.py` runs a throttled scan (every
+  `ANOMALY_SCAN_INTERVAL_SECONDS`) inside the Hermes bookkeeper,
+  alongside the worktree prune. Pure `detect()` evaluates four
+  threshold rules over the recent audit window — IP auth-failure burst
+  (brute force), pinned-cert mismatch spike, single-account failures
+  spread across many IPs (cred stuffing), and bulk `*.delete` by one
+  actor — and `scan()` records each fresh hit as an `anomaly.detected`
+  audit event (per-(rule, subject) Redis cooldown stops re-fires; the
+  detector never reads its own events). Surfaced under a red
+  "Anomalies" filter + count badge on the owner Audit page; thresholds
+  /window/cooldown are `ANOMALY_*` env knobs (0 disables a rule).
+  Unit-tested in `tests/test_anomaly.py`.
 - [x] **vLLM container + `--profile llm`** — new `llm` service in
   `docker-compose.yml` (image `vllm/vllm-openai:v0.6.4.post1`,
   `network_mode: backnet`, GPU passthrough via

@@ -87,6 +87,25 @@ class Settings(BaseSettings):
     # lifecycles. 5 minutes is fine — the operation is cheap and idempotent.
     worktree_prune_interval_seconds: int = Field(300, alias="WORKTREE_PRUNE_INTERVAL_SECONDS")
 
+    # --- audit-log anomaly detection (§15 phase 6) ---
+    # A throttled scan in the Hermes bookkeeper flags threshold-crossing
+    # patterns in the recent audit window and records them as
+    # `anomaly.detected` audit events (visible in the owner audit UI). Each
+    # threshold of 0 disables its rule. Cooldown keeps a standing condition
+    # from re-firing every scan.
+    anomaly_detection_enabled: bool = Field(True, alias="ANOMALY_DETECTION_ENABLED")
+    anomaly_scan_interval_seconds: int = Field(120, alias="ANOMALY_SCAN_INTERVAL_SECONDS")
+    anomaly_window_minutes: int = Field(10, alias="ANOMALY_WINDOW_MINUTES")
+    anomaly_cooldown_minutes: int = Field(30, alias="ANOMALY_COOLDOWN_MINUTES")
+    # Auth failures from one source IP within the window (brute force).
+    anomaly_ip_failure_threshold: int = Field(15, alias="ANOMALY_IP_FAILURE_THRESHOLD")
+    # Pinned-cert mismatches across the deployment within the window.
+    anomaly_cert_mismatch_threshold: int = Field(5, alias="ANOMALY_CERT_MISMATCH_THRESHOLD")
+    # Distinct source IPs failing auth against a single account (cred stuffing).
+    anomaly_account_ip_spread_threshold: int = Field(4, alias="ANOMALY_ACCOUNT_IP_SPREAD_THRESHOLD")
+    # `*.delete` actions by one actor within the window (mass destruction).
+    anomaly_bulk_delete_threshold: int = Field(20, alias="ANOMALY_BULK_DELETE_THRESHOLD")
+
     # --- pythia (subscription oracle) ---
     pythia_refresh_seconds: int = Field(600, alias="PYTHIA_REFRESH_SECONDS")
     pythia_probe_timeout_seconds: float = Field(10.0, alias="PYTHIA_PROBE_TIMEOUT_SECONDS")
