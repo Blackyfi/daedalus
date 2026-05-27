@@ -25,6 +25,7 @@ import httpx
 import structlog
 from sqlalchemy import select
 
+from daedalus import anomaly
 from daedalus.argus import verify_run as argus_verify_run
 from daedalus.connectors.overrides import resolve as resolve_effective_settings
 from daedalus.argus.verifier import (
@@ -214,6 +215,7 @@ class HermesScheduler:
                 # Low-frequency hygiene. Each subtask is throttled internally
                 # so we can call it from the every-5s loop without amplifying.
                 await self._maybe_prune_worktrees()
+                await self._maybe_detect_anomalies()
             except Exception:
                 logger.exception("bookkeeper_tick_failed")
             await asyncio.sleep(5)
@@ -269,6 +271,30 @@ class HermesScheduler:
                 logger.warning("worktree_prune_exec_error", workspace=ws, error=str(exc))
         if pruned:
             logger.info("worktree_prune_complete", projects=pruned)
+
+    async def _maybe_detect_anomalies(self) -> None:
+        """Scan the recent audit window for anomalies once per interval.
+
+        Mirrors the worktree-prune throttle: called from the every-5s loop but
+        only actually runs every `anomaly_scan_interval_seconds`. Records any
+        fresh hits (cooldown-gated) as `anomaly.detected` audit events. We mark
+        "ran" before the work so a failure doesn't make us retry at the 5s
+        cadence — the next interval will catch a standing condition anyway.
+        """
+        if not self.settings.anomaly_detection_enabled:
+            return
+        interval = float(self.settings.anomaly_scan_interval_seconds)
+        last = self._last_periodic.get("anomaly_scan", 0.0)
+        now = time.monotonic()
+        if now - last < interval:
+            return
+        self._last_periodic["anomaly_scan"] = now
+
+        async for session in get_session():
+            fired = await anomaly.scan(session, self.redis, self.settings)
+            if fired:
+                await session.commit()
+            break
 
     # ── orphan recovery ───────────────────────────────────────────────────
 

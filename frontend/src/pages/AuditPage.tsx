@@ -2,10 +2,11 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AuditEvent, api } from "../api";
 
-type Filter = "all" | "ui" | "auth" | "run";
+type Filter = "all" | "anomaly" | "ui" | "auth" | "run";
 
 const FILTERS: { id: Filter; label: string; match: (a: string) => boolean }[] = [
   { id: "all", label: "All", match: () => true },
+  { id: "anomaly", label: "Anomalies", match: (a) => a.startsWith("anomaly.") },
   { id: "ui", label: "UI diagnostics", match: (a) => a.startsWith("ui.") },
   { id: "auth", label: "Auth", match: (a) => a.startsWith("auth.") },
   { id: "run", label: "Runs", match: (a) => a.startsWith("run.") },
@@ -28,6 +29,10 @@ export default function AuditPage() {
     () => (events.data ?? []).filter((e) => e.action.startsWith("ui.")).length,
     [events.data],
   );
+  const anomalyCount = useMemo(
+    () => (events.data ?? []).filter((e) => e.action.startsWith("anomaly.")).length,
+    [events.data],
+  );
 
   return (
     <section className="panel">
@@ -48,6 +53,11 @@ export default function AuditPage() {
               {f.id === "ui" && uiCount > 0 && (
                 <span className="ml-1 rounded bg-amber-500/20 px-1 text-amber-400">
                   {uiCount}
+                </span>
+              )}
+              {f.id === "anomaly" && anomalyCount > 0 && (
+                <span className="ml-1 rounded bg-danger/20 px-1 text-danger">
+                  {anomalyCount}
                 </span>
               )}
             </button>
@@ -74,7 +84,11 @@ export default function AuditPage() {
               <td className="px-2 py-1 font-mono">{new Date(e.at).toLocaleString()}</td>
               <td
                 className={`px-2 py-1 font-mono ${
-                  e.action.startsWith("ui.") ? "text-amber-400" : ""
+                  e.action.startsWith("anomaly.")
+                    ? "font-semibold text-danger"
+                    : e.action.startsWith("ui.")
+                      ? "text-amber-400"
+                      : ""
                 }`}
               >
                 {e.action}
