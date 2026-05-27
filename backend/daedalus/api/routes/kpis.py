@@ -79,7 +79,7 @@ async def task_status_timeseries(
     query = text(
         """
         WITH days AS (
-            SELECT generate_series(:start_date::date, :end_date::date, '1 day')::date AS d
+            SELECT generate_series(CAST(:start_date AS date), CAST(:end_date AS date), '1 day')::date AS d
         ),
         latest AS (
             SELECT d.d AS day, lateral_event.to_status
