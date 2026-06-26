@@ -12,7 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from daedalus.connectors.overrides import resolve as resolve_effective_settings
 from daedalus.core.settings import get_settings
 from daedalus.db.base import get_session
-from daedalus.db.models import Connector, Idea, PlanProposal, PlanProposalStatus, Project, Task
+from daedalus.db.models import (
+    Connector,
+    Idea,
+    Note,
+    PlanProposal,
+    PlanProposalStatus,
+    Project,
+    Task,
+)
 from daedalus.planning import build_proposal
 from daedalus.planning.planner import _idea_to_task_fields  # re-exported for compat tests
 
@@ -72,6 +80,13 @@ async def generate_plan(
     )
     available_connector_ids = [row[0] for row in connectors_res.all()]
 
+    # Project notes act as the "playbook" — conventions/gotchas the planner
+    # should respect (IMPROVEMENTS #19).
+    notes_res = await db.execute(
+        select(Note).where(Note.project_id == project.id).order_by(Note.updated_at.desc())
+    )
+    notes_payload = [{"title": n.title, "body": n.body} for n in notes_res.scalars().all()]
+
     # Honour connector-level overrides (force_project_overrides) when
     # resolving which planning model to use. The relevant connector here is
     # the project's default — that's what the planner runs under.
@@ -93,6 +108,7 @@ async def generate_plan(
         existing_tasks=existing_tasks,
         ideas=ideas_payload,
         planning_model=effective.planning_model,
+        notes=notes_payload,
     )
 
     run_id_raw = body.get("run_id")

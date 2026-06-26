@@ -101,8 +101,14 @@ async def build_proposal(
     existing_tasks: list[dict[str, Any]],
     ideas: list[dict[str, Any]],
     planning_model: str | None = None,
+    notes: list[dict[str, Any]] | None = None,
 ) -> Proposal:
-    """Build a Proposal from project context + ideas. Pure async, no DB access."""
+    """Build a Proposal from project context + ideas. Pure async, no DB access.
+
+    `notes` are the project's persistent notes — the project "playbook":
+    conventions, gotchas, and decisions the planner should respect. Injected
+    as guidance so plans stay consistent with how the project actually works.
+    """
     if not ideas:
         return Proposal(proposed_tasks=[], rationale="No ideas in the box.")
 
@@ -110,6 +116,7 @@ async def build_proposal(
     readme_excerpt = _read_readme(workspace_path, max_chars=4000)
     tasks_summary = _summarise_tasks(existing_tasks, max_count=40)
     ideas_block = _format_ideas(ideas)
+    notes_block = _format_notes(notes or [])
 
     user_prompt = f"""\
 Project: {project_name}
@@ -128,6 +135,10 @@ Available connectors: {', '.join(available_connector_ids) or '(none)'}
 
 --- Existing tasks (latest {min(40, len(existing_tasks))}) ---
 {tasks_summary or '(none)'}
+--- end ---
+
+--- Project notes / playbook (conventions to respect) ---
+{notes_block or '(none)'}
 --- end ---
 
 --- Ideas to plan ---
@@ -300,6 +311,15 @@ def _format_ideas(ideas: list[dict[str, Any]]) -> str:
         tags = ", ".join(idea.get("tags") or [])
         tag_suffix = f" [tags: {tags}]" if tags else ""
         out.append(f"- id={idea_id}{tag_suffix}\n  {text}")
+    return "\n".join(out)
+
+
+def _format_notes(notes: list[dict[str, Any]], *, max_count: int = 20) -> str:
+    out: list[str] = []
+    for note in notes[:max_count]:
+        title = (note.get("title") or "").strip()
+        body = (note.get("body") or "").strip()
+        out.append(f"- {title}\n  {body}" if title else f"- {body}")
     return "\n".join(out)
 
 

@@ -96,3 +96,36 @@ Quota at run time: Max 5x, 5-hour window 90% (critical) — single tiny run atte
 
 ## What worked end-to-end
 3FA login, discovery+register, project CRUD/stats/git-status, connectors list, run lifecycle plumbing (Hermes lease, per-run worktree, transcript, diff, terminal state, idle-timeout enforcement), **the full real-agent fix loop** (pre-yolo snapshot tag → agent edit → agent commit → Daedalus auto-commit → Argus `pass` → task `done`, ~$0.137, ~53 s), planning (ideas→LLM plan→confirm→tasks), merge preview, all read-only page APIs (KPIs/subscription/runners/audit), SPA shell, and IP-throttle 429.
+
+---
+
+## 2026-06-26 post-fix smoke test
+
+Re-ran the three bugs above against the **deployed** stack (`deploy/` compose,
+`https://localhost:9443`, `REQUIRE_CLIENT_CERT=false`) after the fixes landed
+(commit `1745ec7` — "stdin EOF for batch connectors + isalive race; argus lookup
+by task-run id"). Throwaway owner `qa-smoke-1782506312@daedalus-qa.dev`, fresh
+mock repo `/workspaces/daedalus-qa-smoke-1782506312` (single commit on `main`).
+3FA login via curl succeeded (`/auth/status` → `authenticated:true`); project
+`9a43d495-…` registered with `default_connector_id=shell-demo`.
+
+### Result table
+
+| Fix | Bug (pre-fix) | Now | Evidence |
+| --- | --- | --- | --- |
+| **#1 stdin EOF for batch connectors** | `shell-demo` hung until idle-timeout → task run `failed` | **PASS** | Task run `8d297c8b-…` state **`completed`**, **`exit_code: 0`**, finished ~1 s after start. `docker exec deploy-talos-1 cat /tmp/daedalus-task.txt` → the piped stdin (`qa smoke shell-demo stdin EOF\n\nwrites stdin…`), proving `cat` received EOF and exited 0. |
+| **#2 argus run not spuriously `failed`/`-1`** | isalive() waitpid race mislabeled successful runs as `failed`/`exit -1` | **PASS** | Argus run `470bdb52-…` carries **`exit_code: 1`** (the genuine exit of its own `test -f /tmp/daedalus-task.txt` verify command, run in argus's separate read-only sandbox where the talos-`/tmp` file isn't visible) — **not** the spurious `-1`. A complete `ArgusReport` (verdict `fail`, 2 blocker findings, suggested-fix task) was produced; the task run itself was `completed`/exit 0, not mislabeled. No run row showed `-1`. |
+| **#3 `GET /runs/{rid}/argus` by task-run id** | querying the SPA-held **task** run id 404'd | **PASS** | `GET /runs/8d297c8b-…(task run)/argus` → **HTTP 200**, returns report `a12fa2ba-…` (`run_id` resolves to argus run `470bdb52-…` via `source_run_id`). Direct `GET /runs/470bdb52-…(argus run)/argus` also → **200** (same report). |
+
+Note on #2: argus's verdict `fail` here is *correct behaviour*, not a regression —
+`shell-demo` writes to talos's container-local `/tmp`, which argus's isolated
+read-only workspace can't see, so its `verify_commands` legitimately exit 1. The
+fix under test is that this is surfaced as a real exit code + full report rather
+than a teardown-race `-1`.
+
+### Cleanup (all removed)
+- Project `9a43d495-…` deleted via `DELETE /projects/{id}` → **204** (cascaded its run/task/argus_report rows).
+- DB: deleted throwaway user `qa-smoke-1782506312@…` **and** a pre-existing orphan from an earlier aborted smoke run (`qa-smoke-20260626-213840@…` + project `3365b4bd-…`) with their dependents (email_otps, sessions, audit_events ×13, etc.). Final counts: **0** `@daedalus-qa.dev` users, **0** `qa-smoke-%` projects, 0 orphan runs/tasks/argus_reports.
+- Filesystem: `rm -rf` of both `/workspaces/daedalus-qa-smoke-*` repos (root-owned per-run worktrees removed via `docker exec -u 0 deploy-talos-1`); host dir confirmed gone.
+- Talos artifact `/tmp/daedalus-task.txt` removed; logged out the curl session.
+- Redis: no lingering `auth:login_stage`, `auth:ip_fail`, anomaly, or lease keys (all scans empty; logins succeeded so no IP counter accrued).

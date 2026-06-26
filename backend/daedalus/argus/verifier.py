@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Any
@@ -74,6 +75,13 @@ this exact shape:
 }
 
 Rules:
+- Judge each acceptance criterion separately and ground every finding in
+  EXACT evidence: quote the diff hunk, the failing-test line, or the verify
+  output line it refers to. A finding with no concrete evidence is not valid.
+- Do NOT return "pass" unless you can point to evidence that each criterion is
+  met. When in doubt, return "partial", not "pass".
+- Treat deleting, skipping, or weakening tests as a blocker, never a pass —
+  a green verify obtained by removing its own tests is not a real pass.
 - "pass" if every acceptance criterion is satisfied AND every verify command
   exited 0. Code-change tasks must also show a diff consistent with the task.
 - For analytical tasks (review / audit / static analysis / "verify that…"
@@ -181,6 +189,28 @@ Verify command exit code: {verify_exit_code if verify_exit_code is not None else
             )
 
     suggested = data.get("suggested_fix_task")
+    summary = str(data.get("summary") or "").strip()
+
+    # Deterministic tamper gate: if the diff shows tests deleted/skipped/
+    # weakened, the verdict can never be "pass", whatever the LLM said.
+    tamper = detect_tampering(diff_text)
+    if tamper:
+        findings = tamper + findings
+        if verdict == "pass":
+            verdict = "fail"
+            summary = (
+                "Blocked by tamper gate: tests were deleted/skipped/weakened, so a "
+                "green verify is not trustworthy. " + summary
+            ).strip()
+        suggested = suggested or {
+            "title": "Restore tests removed/weakened during the fix",
+            "description": (
+                "Argus detected test tampering (deleted, skipped, or assertion-"
+                "stripped tests). Reinstate the tests and make the code pass them."
+            ),
+            "acceptance_criteria": "No tests are deleted, skipped, or weakened; verify commands pass.",
+        }
+
     if verdict == "pass":
         suggested = None
     if suggested is not None and not isinstance(suggested, dict):
@@ -188,10 +218,138 @@ Verify command exit code: {verify_exit_code if verify_exit_code is not None else
 
     return ArgusVerdict(
         verdict=verdict,
-        summary=str(data.get("summary") or "").strip(),
+        summary=summary,
         findings=findings,
         suggested_fix_task=suggested,
     )
+
+
+# --- deterministic tamper / "fake-green" detection -----------------------
+#
+# Frontier coding agents sometimes make `verify_commands` pass by deleting,
+# skipping, or weakening tests instead of fixing the code (reward hacking).
+# These signals are HIGH-CONFIDENCE and force a non-pass verdict regardless of
+# what the LLM judge says — the cheap deterministic gate in front of the
+# (expensive, fallible) LLM. Kept conservative to avoid blocking honest work.
+
+_TEST_PATH_RE = re.compile(
+    r"(?:^|/)(?:test_[^/]+\.py"
+    r"|[^/]+_test\.(?:py|go)"
+    r"|[^/]+\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs))$"
+)
+_ASSERT_RE = re.compile(
+    r"\b(?:assert|expect\(|\.to(?:Be|Equal|Throw|Match|Contain)"
+    r"|EXPECT_[A-Z]+|ASSERT_[A-Z]+|self\.assert)"
+)
+_SKIP_RE = re.compile(
+    r"@(?:pytest\.mark\.|unittest\.)?skip"
+    r"|pytest\.skip\("
+    r"|\b(?:it|describe|test)\.skip\("
+    r"|\bx(?:it|describe)\("
+    r"|\bt\.Skip\("
+    r"|@Disabled\b"
+)
+
+
+def _is_test_path(path: str) -> bool:
+    return bool(path) and bool(_TEST_PATH_RE.search(path))
+
+
+def detect_tampering(diff_text: str) -> list[dict[str, Any]]:
+    """Scan a unified git diff for test-tampering and return blocker findings.
+
+    Detects, conservatively:
+      1. a whole test file deleted,
+      2. skip markers added to a test file,
+      3. assertions net-removed from a test file (removed with no replacement).
+    Empty list means "no tampering observed" — never a pass/fail by itself.
+    """
+    findings: list[dict[str, Any]] = []
+    cur_path = ""
+    is_test = False
+    deleted_file = False
+    removed_asserts = 0
+    added_asserts = 0
+
+    def _flush() -> None:
+        nonlocal removed_asserts, added_asserts
+        if is_test and cur_path and deleted_file:
+            findings.append(
+                {
+                    "severity": "blocker",
+                    "category": "test",
+                    "description": (
+                        f"Test file `{cur_path}` was deleted — verify commands may "
+                        f"pass only because their tests no longer exist."
+                    ),
+                    "evidence": f"deleted file: {cur_path}",
+                }
+            )
+        elif is_test and removed_asserts > 0 and added_asserts == 0:
+            findings.append(
+                {
+                    "severity": "blocker",
+                    "category": "test",
+                    "description": (
+                        f"{removed_asserts} assertion(s) removed from test file "
+                        f"`{cur_path}` with no replacement — possible fake-green."
+                    ),
+                    "evidence": f"net -{removed_asserts} assertions in {cur_path}",
+                }
+            )
+        removed_asserts = 0
+        added_asserts = 0
+
+    for raw in diff_text.splitlines():
+        if raw.startswith("diff --git"):
+            _flush()
+            cur_path = ""
+            is_test = False
+            deleted_file = False
+            continue
+        if raw.startswith("deleted file mode"):
+            deleted_file = True
+            continue
+        if raw.startswith("+++ "):
+            path = raw[4:].strip()
+            path = path[2:] if path.startswith("b/") else path
+            if path and path != "/dev/null":
+                cur_path = path
+                is_test = _is_test_path(path)
+            continue
+        if raw.startswith("--- "):
+            # For deletions, +++ is /dev/null, so take the path from ---.
+            path = raw[4:].strip()
+            path = path[2:] if path.startswith("a/") else path
+            if path and path != "/dev/null" and not cur_path:
+                cur_path = path
+                is_test = _is_test_path(path)
+            continue
+        if raw.startswith("@@") or raw.startswith("index ") or raw.startswith("new file"):
+            continue
+        if not is_test:
+            continue
+        if raw.startswith("-") and not raw.startswith("---"):
+            if _ASSERT_RE.search(raw):
+                removed_asserts += 1
+        elif raw.startswith("+") and not raw.startswith("+++"):
+            if _ASSERT_RE.search(raw):
+                added_asserts += 1
+            if _SKIP_RE.search(raw):
+                findings.append(
+                    {
+                        "severity": "blocker",
+                        "category": "test",
+                        "description": (
+                            f"Test skip/disable added in `{cur_path}` — verification "
+                            f"may pass only because a test was silenced."
+                        ),
+                        "evidence": raw.strip()[:200],
+                    }
+                )
+
+    _flush()
+    return findings
 
 
 def extract_agent_final_text(transcript: str) -> str:
