@@ -157,6 +157,22 @@ class Settings(BaseSettings):
     connector_signing_required: bool = Field(False, alias="CONNECTOR_SIGNING_REQUIRED")
     connector_signing_pubkey: str | None = Field(None, alias="CONNECTOR_SIGNING_PUBKEY")
 
+    # --- forge integration (IMPROVEMENTS #7) — opt-in, off preserves air-gap ---
+    forge_provider: str = Field("none", alias="FORGE_PROVIDER")  # none | github | gitlab
+    forge_token: str | None = Field(None, alias="FORGE_TOKEN")
+    forge_repo: str | None = Field(None, alias="FORGE_REPO")  # owner/repo or GitLab id
+    forge_api_base: str = Field("https://api.github.com", alias="FORGE_API_BASE")
+
+    # --- opt-in flags for the large/architectural items (default = current
+    # behaviour; see docs/BACKLOG_PROGRESS.md). These ship the config surface;
+    # enabling them is a documented, staging-validated step. ---
+    # #6 parallel intra-project runs (1 = today's single-runner-per-project).
+    max_runs_per_project: int = Field(1, alias="MAX_RUNS_PER_PROJECT")
+    # #12 per-run short-lived credential broker (empty = mounted creds, today).
+    cred_broker_url: str | None = Field(None, alias="CRED_BROKER_URL")
+    # #23 allow a passkey to act as the primary factor (off = 3-step today).
+    passkey_primary_enabled: bool = Field(False, alias="PASSKEY_PRIMARY_ENABLED")
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Annotated
 
@@ -31,6 +32,7 @@ from daedalus.db.models import (
     Role,
     User,
 )
+from daedalus.forge import ForgeError, forge_enabled, open_pull_request
 from daedalus.merge import (
     execute_batch,
     plan_batch,
@@ -485,3 +487,54 @@ async def merge_batch_undo(
         reset_to=result.reset_to,
         error=result.error,
     )
+
+
+class OpenPrOut(BaseModel):
+    state: str
+    url: str | None = None
+    number: int | None = None
+    error: str | None = None
+
+
+@router.post("/{pid}/merge-batches/{bid}/open-pr", response_model=OpenPrOut)
+async def merge_batch_open_pr(
+    pid: uuid.UUID,
+    bid: uuid.UUID,
+    user: Annotated[User, Depends(current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> OpenPrOut:
+    """Push the integration branch and open a PR/MR on the configured forge (#7).
+    Opt-in: returns 409 when forge integration is not configured."""
+    if not forge_enabled():
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "forge integration is not configured (set FORGE_PROVIDER/FORGE_TOKEN/FORGE_REPO)",
+        )
+    batch, _ = await _load_batch(db, pid, bid, user)
+    project = await db.get(Project, pid)
+    # Push the integration branch so the forge can see it.
+    push = await asyncio.create_subprocess_exec(
+        "git", "push", "origin", f"{batch.integration_branch}:{batch.integration_branch}",
+        cwd=project.workspace_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await push.communicate()
+    if push.returncode != 0:
+        return OpenPrOut(state="failed", error=f"git push failed: {out.decode(errors='replace')[:300]}")
+    try:
+        pr = await open_pull_request(
+            head=batch.integration_branch,
+            base=project.git_default_branch,
+            title=f"Daedalus merge batch {str(bid)[:8]}",
+            body="Opened by Daedalus from a verified merge batch.",
+        )
+    except ForgeError as exc:
+        return OpenPrOut(state="failed", error=str(exc))
+    await audit_record(
+        db, actor_user_id=user.id, action="project.merge_batch.open_pr",
+        target_kind="merge_batch", target_id=str(bid),
+        payload={"url": pr.url, "number": pr.number},
+    )
+    await db.commit()
+    return OpenPrOut(state="opened", url=pr.url, number=pr.number)

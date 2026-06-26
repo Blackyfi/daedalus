@@ -7,8 +7,8 @@ Status: ✅ done+deployed · 🚧 in progress · ⏳ queued · 🟡 implemented-
 - ✅ #1 stdin EOF · #2 isalive race · #3 argus-by-task-run-id · #4 lint/test green · #5 frontend+CI harness
 
 ## P1
-- ⏳ #6 Parallel intra-project worktree fan-out + best-of-N
-- ⏳ #7 Forge integration (GitHub/GitLab PR + CI gating)
+- 🟡 #6 Parallel intra-project runner — `MAX_RUNS_PER_PROJECT` flag landed (default 1 = today's single-runner). The N-holder lease + scheduler heartbeat/orphan rework is opt-in/staging-gated: rewriting the core concurrency invariant won't be validated only against the live stack.
+- ✅ #7 Forge integration — daedalus/forge (GitHub + GitLab PR/MR), opt-in via FORGE_*, `POST /merge-batches/{bid}/open-pr` (pushes branch + opens PR). 5 tests. CI-status gating tracked with #18.
 - ✅ #8 Argus tamper-gate + evidence-anchored rubric (deterministic fake-green gate forces non-pass; 7 tests)
 
 ## P2
