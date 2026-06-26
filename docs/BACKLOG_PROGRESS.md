@@ -21,7 +21,7 @@ Status: ✅ done+deployed · 🚧 in progress · ⏳ queued · 🟡 implemented-
 - ⏳ #15 App-layer egress proxy + tamper-evident audit log
 
 ## P3
-- ⏳ #16 Run replay/timeline · 🚧 #17 Notifications/webhooks · ⏳ #18 CI-failure ingestion
+- ⏳ #16 Run replay/timeline · ✅ #17 Notifications/webhooks (NOTIFY_WEBHOOK_URL; anomaly + needs_fixes wired; default-off; 5 tests) · ⏳ #18 CI-failure ingestion
 - ✅ #19 Project playbooks (notes injected into planning) · ✅ #20 /metrics (already scraped in-cluster on backnet; edge-shadow is harmless) · ⏳ #21 Backup hardening (PITR/object-lock)
 - ✅ #22 Migration-safety CI gate (single-head test) · ⏳ #23 Passkeys primary / retire email OTP · ⏳ #24 Queue fairness + flaky-verify retry
 

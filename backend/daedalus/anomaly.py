@@ -26,6 +26,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from daedalus import notify
 from daedalus.auth import audit
 from daedalus.core.settings import Settings
 from daedalus.db.models import AuditEvent
@@ -264,6 +265,15 @@ async def scan(
         if await _claim_cooldown(redis, settings, anomaly):
             await _record(db, settings, anomaly)
             fired.append(anomaly)
+            notify.emit(
+                "anomaly",
+                f"Security anomaly: {anomaly.rule} ({anomaly.severity}) on "
+                f"{anomaly.subject_kind} {anomaly.subject}",
+                rule=anomaly.rule,
+                severity=anomaly.severity,
+                subject=anomaly.subject,
+                count=anomaly.count,
+            )
     if fired:
         await db.flush()
         logger.info(

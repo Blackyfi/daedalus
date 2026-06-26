@@ -25,7 +25,7 @@ import httpx
 import structlog
 from sqlalchemy import select
 
-from daedalus import anomaly
+from daedalus import anomaly, notify
 from daedalus.argus import verify_run as argus_verify_run
 from daedalus.argus.verifier import (
     ArgusVerdict,
@@ -1083,6 +1083,15 @@ class HermesScheduler:
         if passed:
             await client.advance_dependents(run)
             return
+
+        notify.emit(
+            "needs_fixes",
+            f"Task '{task.title}' did not pass verification ({verdict.value}).",
+            task_id=str(task.id),
+            project_id=str(task.project_id),
+            verdict=verdict.value,
+            summary_text=summary,
+        )
 
         diff_hash = await self._compute_diff_hash(run, await session.get(Project, task.project_id))
         if diff_hash and task.last_diff_hash == diff_hash:

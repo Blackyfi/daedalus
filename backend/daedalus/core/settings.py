@@ -145,6 +145,14 @@ class Settings(BaseSettings):
     llm_max_diff_chars: int = Field(60_000, alias="LLM_MAX_DIFF_CHARS")
     llm_max_log_chars: int = Field(20_000, alias="LLM_MAX_LOG_CHARS")
 
+    # --- outbound notifications (IMPROVEMENTS #17) ---
+    # Generic webhook (Slack/Discord/etc.); empty disables all notifications.
+    notify_webhook_url: str | None = Field(None, alias="NOTIFY_WEBHOOK_URL")
+    # Comma-separated opt-in events; empty string means "all".
+    notify_events: str = Field(
+        "needs_fixes,run_failed,rate_limit_pause,anomaly", alias="NOTIFY_EVENTS"
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
