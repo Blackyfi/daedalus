@@ -28,7 +28,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from daedalus.db.base import Base, TimestampMixin
 
-
 # --- enums ---------------------------------------------------------------
 
 class Role(str, enum.Enum):
@@ -516,7 +515,7 @@ class MergeBatch(Base, TimestampMixin):
     require_argus_pass: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    items: Mapped[list["MergeBatchItem"]] = relationship(
+    items: Mapped[list[MergeBatchItem]] = relationship(
         back_populates="batch", cascade="all, delete-orphan"
     )
 

@@ -31,5 +31,5 @@ async def send_otp_email(*, to: str, code: str, magic_link: str, expires_at: dat
             password=settings.smtp_password,
             start_tls=settings.smtp_tls,
         )
-    except Exception as exc:  # noqa: BLE001 — login should not fail because SMTP is down
+    except Exception as exc:
         log.error("smtp.send_failed", error=str(exc), to=to)

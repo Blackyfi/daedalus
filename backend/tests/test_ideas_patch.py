@@ -9,7 +9,6 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.sql import Select
 
-
 # Tests for the IdeaPatch schema --------------------------------------------------
 
 def test_idea_patch_accepts_text_field() -> None:

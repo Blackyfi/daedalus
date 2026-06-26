@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +38,7 @@ async def issue(
 ) -> EmailOTP:
     code = _gen_code()
     token = _gen_token()
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_TTL_MINUTES)
+    expires_at = datetime.now(UTC) + timedelta(minutes=OTP_TTL_MINUTES)
 
     otp = EmailOTP(
         user_id=user.id,
@@ -68,7 +68,7 @@ async def verify(
 
     Successful use marks the OTP consumed.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stmt = (
         select(EmailOTP)
         .where(EmailOTP.user_id == user.id)

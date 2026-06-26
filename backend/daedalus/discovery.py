@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -153,7 +153,7 @@ async def _git(repo: Path, *args: str) -> tuple[int, str]:
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         return -1, ""
     return (
@@ -199,7 +199,7 @@ async def _last_commit(repo: Path) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw).astimezone(timezone.utc)
+        return datetime.fromisoformat(raw).astimezone(UTC)
     except ValueError:
         return None
 

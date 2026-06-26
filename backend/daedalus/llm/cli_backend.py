@@ -43,7 +43,7 @@ from daedalus.llm.client import ChatMessage, LLMError, extract_json
 
 log = structlog.get_logger()
 
-__all__ = ["CliLLMClient", "ChatMessage", "LLMError"]
+__all__ = ["ChatMessage", "CliLLMClient", "LLMError"]
 
 
 class CliLLMClient:
@@ -76,7 +76,7 @@ class CliLLMClient:
         max_tokens: int = 2048,    # ignored ditto
         response_format_json: bool = False,
     ) -> str:
-        del temperature, max_tokens  # noqa: F841 — silence unused-arg warnings
+        del temperature, max_tokens
         target_model = model or self.model
 
         system_prompt, user_prompt = _split_messages(messages, response_format_json)
@@ -173,7 +173,7 @@ class CliLLMClient:
                 proc.communicate(input=user_prompt.encode()),
                 timeout=self.timeout,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             proc.kill()
             await proc.wait()
             raise LLMError(f"claude timed out after {self.timeout}s") from exc

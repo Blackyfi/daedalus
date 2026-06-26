@@ -6,7 +6,7 @@ These tests exercise the gate helpers and the failure-lockout helper directly.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -131,4 +131,4 @@ def test_register_auth_failure_increments_then_locks() -> None:
     auth_routes._register_auth_failure(user, settings)
     assert user.failed_login_count == 3
     assert user.locked_until is not None
-    assert user.locked_until > datetime.now(timezone.utc) + timedelta(minutes=14)
+    assert user.locked_until > datetime.now(UTC) + timedelta(minutes=14)

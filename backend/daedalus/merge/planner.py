@@ -13,7 +13,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from daedalus.db.models import ArgusReport, Project, Run, RunKind, Task, TaskStatus, Verdict
+from daedalus.db.models import ArgusReport, Run, RunKind, Task, TaskStatus, Verdict
 
 logger = structlog.get_logger()
 

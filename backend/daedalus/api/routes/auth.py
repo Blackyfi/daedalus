@@ -1,7 +1,7 @@
 """3-step login: password → email OTP → TOTP."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from daedalus.auth import audit, email_otp, totp
 from daedalus.auth.dependencies import NO_MTLS_SENTINEL
-from daedalus.auth.passwords import needs_rehash, hash_password, verify_password
+from daedalus.auth.passwords import hash_password, needs_rehash, verify_password
 from daedalus.auth.sessions import (
     COOKIE_NAME,
     create_session,
@@ -97,7 +97,7 @@ async def _load_user(db: AsyncSession, email: str) -> User | None:
 
 
 def _locked(user: User) -> bool:
-    return user.locked_until is not None and user.locked_until > datetime.now(timezone.utc)
+    return user.locked_until is not None and user.locked_until > datetime.now(UTC)
 
 
 def _register_auth_failure(user: User, settings) -> None:
@@ -106,7 +106,7 @@ def _register_auth_failure(user: User, settings) -> None:
     TOTP codes can't be brute-forced."""
     user.failed_login_count += 1
     if user.failed_login_count >= settings.lockout_threshold:
-        user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=settings.lockout_minutes)
+        user.locked_until = datetime.now(UTC) + timedelta(minutes=settings.lockout_minutes)
 
 
 # --- IP-level throttle -------------------------------------------------------
@@ -185,7 +185,7 @@ async def step_password(
         if user is not None and not _locked(user):
             user.failed_login_count += 1
             if user.failed_login_count >= settings.lockout_threshold:
-                user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=settings.lockout_minutes)
+                user.locked_until = datetime.now(UTC) + timedelta(minutes=settings.lockout_minutes)
         await _register_ip_failure(ip)
         await audit.record(
             db, actor_user_id=getattr(user, "id", None), actor_ip=_ip(request),
@@ -306,7 +306,7 @@ async def step_totp(
     await _clear_ip_failures(ip)
     if not user.pinned_cert_fingerprint:
         user.pinned_cert_fingerprint = cert_fp
-    user.last_login_at = datetime.now(timezone.utc)
+    user.last_login_at = datetime.now(UTC)
 
     sess = await create_session(db, user, cert_fp=cert_fp, ip=_ip(request))
     cookie = sign_session_id(sess.id)

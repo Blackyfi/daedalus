@@ -6,10 +6,10 @@ trip between begin and finish without sticky sessions.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -204,7 +204,7 @@ async def authenticate_finish(
 
     if not user.pinned_cert_fingerprint:
         user.pinned_cert_fingerprint = cert_fp
-    user.last_login_at = datetime.now(timezone.utc)
+    user.last_login_at = datetime.now(UTC)
 
     sess = await create_session(db, user, cert_fp=cert_fp, ip=_ip(request))
     cookie = sign_session_id(sess.id)

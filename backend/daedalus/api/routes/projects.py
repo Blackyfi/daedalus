@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
@@ -13,13 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from daedalus.api.schemas import ProjectIn, ProjectOut, ProjectPatch
 from daedalus.auth.audit import record
-from daedalus.costs import month_start
 from daedalus.auth.dependencies import current_user
 from daedalus.core.settings import get_settings
+from daedalus.costs import month_start
 from daedalus.db.base import get_session
 from daedalus.db.models import Project, Role, Run, Task, TaskStatus, User
 from daedalus.db.redis import get_redis
-from daedalus.git_status import GitStatus, get_status as get_git_status
+from daedalus.git_status import GitStatus
+from daedalus.git_status import get_status as get_git_status
 
 router = APIRouter()
 
@@ -53,7 +55,7 @@ async def _attach_rate_limit_pause(projects: Iterable[Project]) -> None:
             p.rate_limit_paused_reason = None
         return
     state: dict[str, tuple[datetime | None, str | None]] = {}
-    for cid, raw in zip(connectors, raw_values):
+    for cid, raw in zip(connectors, raw_values, strict=False):
         if not raw:
             state[cid] = (None, None)
             continue
@@ -178,7 +180,7 @@ async def project_stats(
     # over runs attached to that task, averaged across tasks that landed in
     # `done` within the last 7 days. Empty windows stay None so the SPA can
     # render N/A without doing the math itself.
-    since = datetime.now(timezone.utc) - timedelta(days=7)
+    since = datetime.now(UTC) - timedelta(days=7)
     per_task_dur = (
         select(
             Task.project_id.label("project_id"),

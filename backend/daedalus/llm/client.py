@@ -113,7 +113,6 @@ class LLMClient:
         """Ask for a JSON object/array back, with one parse-retry on failure."""
         attempt = 0
         last_text = ""
-        last_exc: Exception | None = None
         while attempt <= max_retries:
             try:
                 text = await self.chat(

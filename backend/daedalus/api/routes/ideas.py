@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -87,7 +87,7 @@ async def patch_idea(
         return idea
     for k, v in updates.items():
         setattr(idea, k, v)
-    idea.updated_at = datetime.now(timezone.utc)
+    idea.updated_at = datetime.now(UTC)
     await record(
         db,
         actor_user_id=user.id,

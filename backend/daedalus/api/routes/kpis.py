@@ -12,7 +12,7 @@ rendering of midnight-UTC.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -69,13 +69,13 @@ async def task_status_timeseries(
     """
     await _project_for_user(db, pid, user)
 
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     start = today - timedelta(days=days - 1)
 
     # For each day in [start, today], find the latest status event per task
     # whose `at` is <= end-of-day, then count per status. The lateral join
     # picks at most one event per task per day, so the row count stays
-    # bounded by (days × tasks-with-events) rather than blowing up.
+    # bounded by (days x tasks-with-events) rather than blowing up.
     query = text(
         """
         WITH days AS (

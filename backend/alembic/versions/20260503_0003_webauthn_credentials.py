@@ -6,8 +6,9 @@ Revises: 20260501_0002
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "20260503_0003"
 down_revision = "20260501_0002"

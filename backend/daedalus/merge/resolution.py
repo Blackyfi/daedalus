@@ -40,11 +40,11 @@ from daedalus.db.models import (
     MergeBatchItem,
     MergeBatchState,
     MergeItemState,
+    PriorityLane,
     Project,
     Run,
     RunKind,
     RunState,
-    PriorityLane,
     Task,
     TaskPriority,
     TaskStatus,
@@ -146,11 +146,11 @@ async def resolve_next_conflict(
 
     # Reset any in-progress merge state from a prior aborted attempt.
     await _git(worktree, "merge", "--abort")
-    rc, _, err = await _git(worktree, "merge", "--no-commit", "--no-ff", item.branch)
+    rc, _, _err = await _git(worktree, "merge", "--no-commit", "--no-ff", item.branch)
     if rc == 0:
         # No conflict this time around — earlier merges resolved it. Commit
         # the auto-merge and mark resolved without spawning an agent.
-        rc2, _, err2 = await _git(
+        rc2, _, _err2 = await _git(
             worktree,
             "commit",
             "--no-edit",

@@ -1,7 +1,6 @@
 """Connector CRUD + JSON-Schema validation."""
 from __future__ import annotations
 
-import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status

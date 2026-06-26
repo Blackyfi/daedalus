@@ -10,7 +10,7 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -103,7 +103,7 @@ class HermesClient:
     async def publish_project_event(self, project_id: uuid.UUID | str, payload: dict[str, Any]) -> None:
         await self.redis.publish(
             f"{EVENT_PROJECT_PREFIX}:{project_id}",
-            json.dumps({"ts": datetime.now(timezone.utc).isoformat(), **payload}),
+            json.dumps({"ts": datetime.now(UTC).isoformat(), **payload}),
         )
 
     async def publish_queue_event(self, payload: dict[str, Any]) -> None:
@@ -115,7 +115,7 @@ class HermesClient:
             EVENT_QUEUE_CHANNEL,
             json.dumps(
                 {
-                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "ts": datetime.now(UTC).isoformat(),
                     "lane_lengths": lane_lengths,
                     **payload,
                 }
@@ -501,7 +501,7 @@ class HermesClient:
         payload = {
             "run_id": str(run.id),
             "action": action,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         await self.redis.publish(signal_key, json.dumps(payload))
         logger.info("signal_sent", run_id=str(run.id), action=action)
@@ -513,7 +513,7 @@ class HermesClient:
             "run_id": str(run.id),
             "action": "inject",
             "text": text,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         await self.redis.publish(signal_key, json.dumps(payload))
         logger.info("text_injected", run_id=str(run.id), len=len(text))
@@ -526,7 +526,7 @@ class HermesClient:
             "action": "resize",
             "rows": rows,
             "cols": cols,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         await self.redis.publish(signal_key, json.dumps(payload))
         logger.info("pty_resized", run_id=str(run.id), rows=rows, cols=cols)
@@ -542,7 +542,7 @@ class HermesClient:
         **extra: Any,
     ) -> None:
         """Finalise a run row in the database."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         run.state = state or RunState.completed
         run.exit_code = exit_code
         run.finished_at = now

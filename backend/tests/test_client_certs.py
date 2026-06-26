@@ -32,7 +32,7 @@ def _generate_throwaway_ca(directory: Path) -> tuple[Path, Path]:
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "daedalus-test"),
         ]
     )
-    now = _dt.datetime.now(tz=_dt.timezone.utc)
+    now = _dt.datetime.now(tz=_dt.UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -162,7 +162,7 @@ def test_pkcs12_bundle_round_trips_with_password(tmp_path: Path, ca_paths: tuple
     bundle = minted.pkcs12_path.read_bytes()
 
     # Wrong password should fail.
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         pkcs12.load_key_and_certificates(bundle, b"wrong-password")
 
     key, cert, additional = pkcs12.load_key_and_certificates(bundle, password.encode())

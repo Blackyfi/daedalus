@@ -31,7 +31,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
 
-
 _DEFAULT_KEY_BITS = 4096
 
 
@@ -93,7 +92,7 @@ def mint_client_cert(
         ]
     )
 
-    not_before = _dt.datetime.now(tz=_dt.timezone.utc) - _dt.timedelta(minutes=5)
+    not_before = _dt.datetime.now(tz=_dt.UTC) - _dt.timedelta(minutes=5)
     not_after = not_before + _dt.timedelta(days=days)
     serial = x509.random_serial_number()
 

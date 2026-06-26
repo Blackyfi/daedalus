@@ -8,13 +8,12 @@ Adds projects.monthly_cost_cap_usd_micros (nullable; null = no cap).
 """
 from __future__ import annotations
 
-from typing import Union
-
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "20260526_0010"
-down_revision: Union[str, None] = "20260512_0009"
+down_revision: str | None = "20260512_0009"
 branch_labels = None
 depends_on = None
 

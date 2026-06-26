@@ -23,7 +23,7 @@ from daedalus.llm.client import ChatMessage
 log = structlog.get_logger()
 
 
-class WorktreeUnreadable(Exception):
+class WorktreeUnreadableError(Exception):
     """Raised when the verifier process can't read a run worktree.
 
     This is an *infrastructure* problem (e.g., the workspaces volume isn't
@@ -235,7 +235,7 @@ def extract_agent_final_text(transcript: str) -> str:
 async def collect_diff(worktree_path: str, default_branch: str) -> str:
     """`git diff <default_branch>...HEAD` from the run's worktree.
 
-    Raises WorktreeUnreadable when the path doesn't exist or isn't a git
+    Raises WorktreeUnreadableError when the path doesn't exist or isn't a git
     worktree from this process's perspective. This separates "the agent
     produced no diff" (return "") from "this process can't see the
     workspace" (raise) — the latter must NEVER be reported to the LLM
@@ -245,7 +245,7 @@ async def collect_diff(worktree_path: str, default_branch: str) -> str:
     if not worktree_path:
         return ""
     if not os.path.isdir(worktree_path):
-        raise WorktreeUnreadable(f"worktree path missing: {worktree_path}")
+        raise WorktreeUnreadableError(f"worktree path missing: {worktree_path}")
     try:
         probe = await asyncio.create_subprocess_exec(
             "git", "rev-parse", "--is-inside-work-tree",
@@ -255,12 +255,12 @@ async def collect_diff(worktree_path: str, default_branch: str) -> str:
         )
         _, perr = await probe.communicate()
         if probe.returncode != 0:
-            raise WorktreeUnreadable(
+            raise WorktreeUnreadableError(
                 f"not a git worktree at {worktree_path}: "
                 f"{perr.decode(errors='replace').strip()[:200]}"
             )
     except FileNotFoundError as exc:
-        raise WorktreeUnreadable(f"cannot exec git: {exc}") from exc
+        raise WorktreeUnreadableError(f"cannot exec git: {exc}") from exc
     # Exclude common compiled / vendored / cache artefacts via git pathspecs.
     # A diff that contains only e.g. .pyc files is functionally empty work —
     # we want Argus to grade the agent on real code, not bytecode noise. See

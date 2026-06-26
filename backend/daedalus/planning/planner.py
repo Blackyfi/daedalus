@@ -7,7 +7,6 @@ inference server.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +14,6 @@ from typing import Any
 
 import structlog
 
-from daedalus.core.settings import get_settings
 from daedalus.llm import LLMError, get_llm_client
 from daedalus.llm.client import ChatMessage
 
@@ -306,4 +304,4 @@ def _format_ideas(ideas: list[dict[str, Any]]) -> str:
 
 
 # Re-export for tests that imported the old internal-api implementation directly.
-__all__ = ["build_proposal", "TaskProposal", "Proposal", "_idea_to_task_fields"]
+__all__ = ["Proposal", "TaskProposal", "_idea_to_task_fields", "build_proposal"]

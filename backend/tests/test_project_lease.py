@@ -27,7 +27,7 @@ class FakeRedis:
         self.sets: dict[str, set[str]] = {}
 
     # eval mimics the Lua claim script.
-    async def eval(  # noqa: PLR0913
+    async def eval(
         self,
         script: str,
         numkeys: int,
@@ -36,7 +36,7 @@ class FakeRedis:
         keys = list(args[:numkeys])
         argv = list(args[numkeys:])
         queue_key, lease_key, active_set_key = keys
-        run_id, ttl, max_concurrent, payload, project_id = argv
+        run_id, _ttl, max_concurrent, payload, project_id = argv
 
         max_concurrent = int(max_concurrent)
         if len(self.sets.get(active_set_key, set())) >= max_concurrent:
@@ -86,11 +86,11 @@ class FakeRedis:
             def __init__(self) -> None:
                 self.ops: list[Any] = []
 
-            def delete(self, key: str) -> "_Pipe":
+            def delete(self, key: str) -> _Pipe:
                 self.ops.append(("delete", key))
                 return self
 
-            def srem(self, key: str, *members: str) -> "_Pipe":
+            def srem(self, key: str, *members: str) -> _Pipe:
                 self.ops.append(("srem", key, members))
                 return self
 

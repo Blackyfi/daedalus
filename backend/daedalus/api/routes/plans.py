@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -20,7 +20,6 @@ from daedalus.db.models import (
     Project,
     Role,
     Task,
-    TaskPriority,
     User,
 )
 
@@ -127,7 +126,7 @@ async def confirm_proposal(
             idea.archived = True
 
     plan.status = PlanProposalStatus.confirmed
-    plan.confirmed_at = datetime.now(timezone.utc)
+    plan.confirmed_at = datetime.now(UTC)
     if body.proposed_tasks is not None:
         plan.proposed_tasks = raw_tasks
     if body.rationale is not None:

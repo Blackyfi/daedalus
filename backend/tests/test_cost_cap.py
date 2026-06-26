@@ -1,7 +1,7 @@
 """Per-project monthly cost-cap logic."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -22,10 +22,10 @@ def test_over_cap_boundaries() -> None:
 
 
 def test_month_start_is_first_of_month_midnight_utc() -> None:
-    ms = month_start(datetime(2026, 5, 26, 13, 37, 5, tzinfo=timezone.utc))
+    ms = month_start(datetime(2026, 5, 26, 13, 37, 5, tzinfo=UTC))
     assert (ms.year, ms.month, ms.day) == (2026, 5, 1)
     assert (ms.hour, ms.minute, ms.second, ms.microsecond) == (0, 0, 0, 0)
-    assert ms.tzinfo == timezone.utc
+    assert ms.tzinfo == UTC
 
 
 def test_project_schema_accepts_cap_and_rejects_negative() -> None:

@@ -17,9 +17,10 @@ records the hits.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Protocol
+from datetime import UTC, datetime, timedelta
+from typing import Any, Protocol
 
 import structlog
 from sqlalchemy import select
@@ -239,7 +240,7 @@ async def scan(
     Returns the anomalies that were newly recorded this tick (i.e. not still in
     their cooldown window). Callers should `commit` afterwards.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     window_start = now - timedelta(minutes=settings.anomaly_window_minutes)
     res = await db.execute(
         select(AuditEvent)

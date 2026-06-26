@@ -84,7 +84,7 @@ class PTYSession:
         env.update(self.env)
         env["TERM"] = self.term
 
-        cmd = [self.command] + self.args
+        cmd = [self.command, *self.args]
 
         self._proc = ptyprocess.PtyProcess.spawn(
             cmd,

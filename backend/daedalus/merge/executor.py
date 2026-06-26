@@ -194,7 +194,7 @@ async def execute_batch(
         if os.path.isdir(admin):
             _chown_tree(admin, agent_uid, agent_gid)
 
-    for plan, item in zip(plans, items):
+    for plan, item in zip(plans, items, strict=False):
         if plan.category != "clean":
             item.state = _CATEGORY_TO_ITEM_STATE.get(plan.category, MergeItemState.skipped_missing)
             result.results.append(MergeResult(plan=plan, state=_skip_state(plan.category)))
@@ -218,7 +218,7 @@ async def execute_batch(
         item.category = MergeItemCategory.conflict
         item.error = err.strip()[:500]
         # Refresh conflicting_files via a fresh dry-run against the new tip.
-        rc2, conflicts = await _merge_tree_conflicts(worktree_dir, "HEAD", plan.candidate.branch)
+        _rc2, conflicts = await _merge_tree_conflicts(worktree_dir, "HEAD", plan.candidate.branch)
         if conflicts:
             item.conflicting_files = conflicts
         new_plan = BranchPlan(

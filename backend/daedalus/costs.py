@@ -7,7 +7,7 @@ once the current calendar month's run cost reaches it.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,7 @@ from daedalus.db.models import Run
 
 def month_start(now: datetime | None = None) -> datetime:
     """First instant of the current UTC calendar month."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 

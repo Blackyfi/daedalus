@@ -2,21 +2,25 @@
 from __future__ import annotations
 
 import asyncio
-import json
+from datetime import UTC
 from pathlib import Path
 
 import click
-from jsonschema import Draft202012Validator
 from sqlalchemy import select
 
 from daedalus.auth.audit import record as audit_record
 from daedalus.auth.client_certs import mint_client_cert
 from daedalus.auth.passwords import hash_password
 from daedalus.auth.policy import policy_violations
-from daedalus.auth.totp import encrypt_secret, generate_recovery_codes, hash_recovery_code, new_totp_secret, provisioning_uri
-from daedalus.connectors.schema import CONNECTOR_SCHEMA
+from daedalus.auth.totp import (
+    encrypt_secret,
+    generate_recovery_codes,
+    hash_recovery_code,
+    new_totp_secret,
+    provisioning_uri,
+)
 from daedalus.db.base import get_session
-from daedalus.db.models import Connector, Role, User
+from daedalus.db.models import Role, User
 
 
 @click.group()
@@ -282,7 +286,7 @@ async def _reset_totp(*, email: str, regen_recovery: bool, assume_yes: bool) -> 
     Also clears any active sessions and the failed-login lockout so the user
     can log straight back in with the freshly enrolled authenticator.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from daedalus.db.models import Session as SessionModel
 
@@ -315,7 +319,7 @@ async def _reset_totp(*, email: str, regen_recovery: bool, assume_yes: bool) -> 
         # Revoke existing sessions so the lost device can't keep the user
         # signed in (defence in depth — the spec calls for this when 3FA is
         # being rebuilt).
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         sessions_res = await db.execute(
             select(SessionModel).where(
                 SessionModel.user_id == user.id,
@@ -342,7 +346,7 @@ async def _reset_totp(*, email: str, regen_recovery: bool, assume_yes: bool) -> 
 
     click.echo("")
     click.echo(f"TOTP reset for {target}.")
-    click.echo(f"Provisioning URI (scan into the authenticator):")
+    click.echo("Provisioning URI (scan into the authenticator):")
     click.echo(f"  {provisioning_uri(target, new_secret)}")
     if regen_recovery:
         click.echo("")

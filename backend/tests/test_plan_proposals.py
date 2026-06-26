@@ -1,9 +1,6 @@
 """Smoke tests for the Plan Review flow (proposal generation + confirm)."""
 from __future__ import annotations
 
-import asyncio
-import os
-
 import pytest
 
 # These tests need the model + pydantic schemas only — they exercise the

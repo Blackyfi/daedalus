@@ -22,7 +22,8 @@ from daedalus.auth.sessions import COOKIE_NAME, unsign_session_id
 from daedalus.core.logging import configure_logging
 from daedalus.core.settings import get_settings
 from daedalus.db.base import dispose_engine, get_engine, get_sessionmaker
-from daedalus.db.models import Project, Role, Run, Session as SessionModel, User
+from daedalus.db.models import Project, Role, Run, User
+from daedalus.db.models import Session as SessionModel
 from daedalus.db.redis import close_redis, get_redis
 
 

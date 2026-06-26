@@ -5,7 +5,6 @@ runner bar (project-plan.md §8.5.1).
 """
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import asdict
 from typing import Annotated, Any
@@ -24,8 +23,6 @@ from daedalus.hermes.leases import (
     project_lease_key,
 )
 from daedalus.pythia.probe import (
-    SUBSCRIPTION_REDIS_KEY,
-    SubscriptionInfo,
     read_cached_async,
 )
 

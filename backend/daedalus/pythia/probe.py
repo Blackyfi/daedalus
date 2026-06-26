@@ -22,7 +22,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +75,7 @@ class SubscriptionInfo:
     five_hour_resets_in: str | None = None
     raw_text: str = ""
     error: str | None = None
-    fetched_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    fetched_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 # ── Tier classification ──────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ def _format_resets_in(resets_at_iso: str | None) -> str | None:
         dt = datetime.fromisoformat(resets_at_iso.replace("Z", "+00:00"))
     except ValueError:
         return None
-    delta = dt - datetime.now(timezone.utc)
+    delta = dt - datetime.now(UTC)
     secs = max(int(delta.total_seconds()), 0)
     if secs == 0:
         return "now"

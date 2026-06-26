@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from daedalus.api.schemas import RunOut, TaskIn, TaskOut, TaskPatch
 from daedalus.auth.audit import record
-from daedalus.costs import month_cost_usd_micros, over_cap
 from daedalus.auth.dependencies import current_user
+from daedalus.costs import month_cost_usd_micros, over_cap
 from daedalus.db.base import get_session
 from daedalus.db.models import (
     Project,
@@ -23,10 +23,10 @@ from daedalus.db.models import (
     TaskStatus,
     User,
 )
-
-_ACTIVE_RUN_STATES = (RunState.queued, RunState.claimed, RunState.running)
 from daedalus.git_status import needs_pull as git_needs_pull
 from daedalus.hermes.client import HermesClient
+
+_ACTIVE_RUN_STATES = (RunState.queued, RunState.claimed, RunState.running)
 
 router = APIRouter()
 

@@ -11,7 +11,6 @@ from daedalus.core.settings import get_settings
 from daedalus.db.base import get_session
 from daedalus.db.models import Role, User
 
-
 # Sentinel used as the bound `cert_fingerprint` when mTLS is disabled at the
 # proxy. We still want sessions to be bindable to *something* so the column
 # stays NOT NULL and the audit log has a stable identifier.

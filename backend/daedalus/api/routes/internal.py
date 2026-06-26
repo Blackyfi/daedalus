@@ -123,4 +123,4 @@ async def generate_plan(
 
 
 # Kept exported so tests/test_internal_planning.py keeps importing the old name.
-__all__ = ["router", "_idea_to_task_fields", "require_internal_key"]
+__all__ = ["_idea_to_task_fields", "require_internal_key", "router"]

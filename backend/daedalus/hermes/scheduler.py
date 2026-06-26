@@ -18,7 +18,7 @@ import json
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -27,20 +27,14 @@ from sqlalchemy import select
 
 from daedalus import anomaly
 from daedalus.argus import verify_run as argus_verify_run
-from daedalus.connectors.overrides import resolve as resolve_effective_settings
 from daedalus.argus.verifier import (
     ArgusVerdict,
-    WorktreeUnreadable,
+    WorktreeUnreadableError,
     collect_diff,
     extract_agent_final_text,
 )
+from daedalus.connectors.overrides import resolve as resolve_effective_settings
 from daedalus.core.settings import get_settings
-from daedalus.observability import (
-    ARGUS_VERDICTS_TOTAL,
-    QUEUE_DEPTH,
-    RUNS_COMPLETED_TOTAL,
-    RUN_DURATION_SECONDS,
-)
 from daedalus.db.base import get_session
 from daedalus.db.models import (
     ArgusReport,
@@ -56,7 +50,7 @@ from daedalus.db.models import (
     Verdict,
 )
 from daedalus.db.redis import get_redis
-from daedalus.hermes.client import HermesClient, _EnqueuePayload, _QUEUE_PREFIX
+from daedalus.hermes.client import _QUEUE_PREFIX, HermesClient, _EnqueuePayload
 from daedalus.hermes.leases import (
     active_project_count,
     active_projects,
@@ -65,6 +59,12 @@ from daedalus.hermes.leases import (
     parse_payload,
     release_lease,
     try_claim,
+)
+from daedalus.observability import (
+    ARGUS_VERDICTS_TOTAL,
+    QUEUE_DEPTH,
+    RUN_DURATION_SECONDS,
+    RUNS_COMPLETED_TOTAL,
 )
 from daedalus.storage.objects import get_object_store
 
@@ -193,7 +193,7 @@ class HermesScheduler:
                 await asyncio.sleep(self.settings.scheduler_poll_seconds)
                 continue
 
-            run, payload = claimed
+            run, _payload = claimed
             project_id = str(run.project_id)
             try:
                 await self._handle_run(run)
@@ -267,7 +267,7 @@ class HermesScheduler:
                         rc=proc.returncode,
                         stderr=err.decode(errors="replace").strip()[:200],
                     )
-            except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
+            except (TimeoutError, FileNotFoundError, OSError) as exc:
                 logger.warning("worktree_prune_exec_error", workspace=ws, error=str(exc))
         if pruned:
             logger.info("worktree_prune_complete", projects=pruned)
@@ -343,7 +343,7 @@ class HermesScheduler:
                         # ~6 bookkeeper ticks of grace.
                         started = run.started_at
                         if started is not None and (
-                            datetime.now(timezone.utc) - started
+                            datetime.now(UTC) - started
                         ).total_seconds() < 30:
                             live_run_ids.add(str(run.id))
                             continue
@@ -363,7 +363,7 @@ class HermesScheduler:
                             data.get("state", "completed"), RunState.completed
                         )
                         run.exit_code = data.get("exit_code")
-                        run.finished_at = datetime.now(timezone.utc)
+                        run.finished_at = datetime.now(UTC)
                         run.transcript_object_key = data.get("transcript_object_key")
                         if data.get("token_input") is not None:
                             run.token_input = int(data["token_input"])
@@ -384,7 +384,7 @@ class HermesScheduler:
                             )
                         continue
                     run.state = RunState.aborted_unsafe
-                    run.finished_at = datetime.now(timezone.utc)
+                    run.finished_at = datetime.now(UTC)
                     run.exit_code = -1
                     stale.append(run)
                 if stale or completed_via_orphan:
@@ -573,7 +573,7 @@ class HermesScheduler:
                     return None
 
                 run.state = RunState.running
-                run.started_at = datetime.now(timezone.utc)
+                run.started_at = datetime.now(UTC)
                 if run.kind == RunKind.task and run.task_id is not None:
                     task = await session.get(Task, run.task_id)
                     if task is not None:
@@ -627,7 +627,7 @@ class HermesScheduler:
                 if db_run:
                     db_run.state = final_state or RunState.completed
                     db_run.exit_code = exit_code
-                    db_run.finished_at = datetime.now(timezone.utc)
+                    db_run.finished_at = datetime.now(UTC)
                     db_run.transcript_object_key = completion_meta.get("transcript_object_key")
                     if completion_meta.get("token_input") is not None:
                         db_run.token_input = int(completion_meta["token_input"])
@@ -826,7 +826,7 @@ class HermesScheduler:
         return {
             "run_id": str(run.id),
             "action": action,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "connector_spec": connector_spec,
             "task": {
                 "id": str(task.id) if task else None,
@@ -932,7 +932,7 @@ class HermesScheduler:
         if run.worktree_path and project is not None:
             try:
                 diff_text = await collect_diff(run.worktree_path, project.git_default_branch)
-            except WorktreeUnreadable as exc:
+            except WorktreeUnreadableError as exc:
                 # Infra error — this process can't see the run worktree.
                 # Don't write an Argus report (no honest verdict is
                 # possible), don't transition the task to needs_fixes
@@ -1225,7 +1225,7 @@ class HermesScheduler:
                     stderr=asyncio.subprocess.DEVNULL,
                 )
                 rc = await asyncio.wait_for(proc.wait(), timeout=5)
-            except (asyncio.TimeoutError, Exception):
+            except (TimeoutError, Exception):
                 continue
             if rc != 0:
                 return sha
@@ -1274,7 +1274,7 @@ class HermesScheduler:
                 "rate_limit_pause_no_connector_id", run_id=str(run.id)
             )
             return
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ttl = max(60, int((retry_after - now).total_seconds()))
         key = f"daedalus:connector_paused:{connector_id}"
         payload = json.dumps(

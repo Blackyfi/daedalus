@@ -18,9 +18,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -85,7 +84,7 @@ async def _run_git(args: list[str], cwd: str, timeout: float) -> tuple[int, str,
 
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()
         except Exception:
@@ -98,7 +97,7 @@ async def _run_git(args: list[str], cwd: str, timeout: float) -> tuple[int, str,
 async def _local_status(workspace_path: str) -> GitStatus:
     """Compute behind/ahead from local refs only — no network. Falls back
     cleanly when there's no upstream configured."""
-    status = GitStatus(checked_at=datetime.now(timezone.utc).isoformat())
+    status = GitStatus(checked_at=datetime.now(UTC).isoformat())
     if not workspace_path or not os.path.isdir(workspace_path):
         status.error = "workspace path missing"
         return status
@@ -161,7 +160,7 @@ async def _fetch_and_status(workspace_path: str) -> GitStatus:
         status.fetch_failed = True
         status.fetch_error = err.strip()[:200] or f"git fetch returned {rc}"
         return status
-    status.last_fetched_at = datetime.now(timezone.utc).isoformat()
+    status.last_fetched_at = datetime.now(UTC).isoformat()
 
     # After fetching, recompute behind/ahead from the fresh refs.
     refreshed = await _local_status(workspace_path)

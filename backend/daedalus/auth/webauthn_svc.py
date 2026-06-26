@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC
 from urllib.parse import urlparse
 
 import structlog
@@ -163,9 +164,9 @@ async def finish_authentication(
         require_user_verification=False,
     )
     cred.sign_count = verification.new_sign_count
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    cred.last_used_at = datetime.now(timezone.utc)
+    cred.last_used_at = datetime.now(UTC)
     await db.flush()
     log.info("webauthn.authenticated", user_id=str(user.id), credential_id=cred.id)
     return cred

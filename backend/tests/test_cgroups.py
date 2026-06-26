@@ -2,8 +2,6 @@
 so the tests work everywhere — even if the host has cgroup v1 / no privs."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from daedalus.talos import cgroups

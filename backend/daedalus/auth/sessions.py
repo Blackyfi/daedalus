@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from itsdangerous import BadSignature, TimestampSigner
 from sqlalchemy import select
@@ -39,7 +39,7 @@ async def create_session(
     ip: str | None,
 ) -> SessionModel:
     settings = get_settings()
-    expires = datetime.now(timezone.utc) + timedelta(hours=settings.session_hard_hours)
+    expires = datetime.now(UTC) + timedelta(hours=settings.session_hard_hours)
     row = SessionModel(
         user_id=user.id,
         cert_fingerprint=cert_fp,
@@ -58,7 +58,7 @@ async def load_session(
     cert_fp: str,
 ) -> tuple[SessionModel, User] | None:
     settings = get_settings()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stmt = select(SessionModel, User).join(User, User.id == SessionModel.user_id).where(
         SessionModel.id == sid,
         SessionModel.cert_fingerprint == cert_fp,
@@ -82,5 +82,5 @@ async def revoke_session(session: AsyncSession, sid: uuid.UUID) -> None:
     res = await session.execute(select(SessionModel).where(SessionModel.id == sid))
     s = res.scalar_one_or_none()
     if s and s.revoked_at is None:
-        s.revoked_at = datetime.now(timezone.utc)
+        s.revoked_at = datetime.now(UTC)
         await session.flush()

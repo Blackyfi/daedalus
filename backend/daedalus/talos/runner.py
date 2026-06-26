@@ -16,7 +16,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import redis
 import structlog
@@ -389,7 +389,7 @@ class TalosRunner:
             or bool(connector_spec.get("prompt_as_arg"))
         )
         if prompt_via_arg and input_text:
-            args = list(args) + [input_text]
+            args = [*list(args), input_text]
             input_text = ""
 
         egress_allowlist = connector_spec.get("egress_allowlist")
@@ -605,7 +605,7 @@ class TalosRunner:
             "run_id": ctx.run_id,
             "exit_code": exit_code,
             "state": state,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": datetime.now(UTC).isoformat(),
             "transcript_object_key": transcript_object_key,
             "idle_killed": ctx.idle_killed,
             "token_input": usage.token_input,
@@ -1016,11 +1016,11 @@ def _detect_rate_limit(transcript_text: str) -> tuple[bool, str | None]:
         from datetime import timedelta
         return (
             True,
-            (datetime.now(timezone.utc) + timedelta(minutes=30))
+            (datetime.now(UTC) + timedelta(minutes=30))
             .replace(microsecond=0)
             .isoformat(),
         )
-    return (True, datetime.fromtimestamp(latest_resets, tz=timezone.utc).isoformat())
+    return (True, datetime.fromtimestamp(latest_resets, tz=UTC).isoformat())
 
 
 def main() -> None:
