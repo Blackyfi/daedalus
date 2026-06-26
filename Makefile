@@ -36,6 +36,10 @@ backend.test: ## Run pytest
 backend.lint: ## Run ruff
 	cd backend && ruff check .
 
+ci: ## Run the full gate locally (backend lint+tests, frontend typecheck+unit tests)
+	cd backend && ruff check . && pytest -q
+	cd frontend && npm ci && npx tsc -b && npm test
+
 # --- db ---
 migrate: ## Apply DB migrations
 	$(COMPOSE) exec api alembic upgrade head
@@ -47,6 +51,10 @@ frontend.dev: ## Run the Vite dev server (proxies /api → :8000, /ws → :8001)
 	cd frontend && npm install && npm run dev
 frontend.build: ## Build the SPA
 	cd frontend && npm install && npm run build
+frontend.test: ## Run frontend unit + component tests (vitest)
+	cd frontend && npm install && npm test
+frontend.e2e: ## Run Playwright E2E against a live stack (set E2E_BASE_URL)
+	cd frontend && npm install && npx playwright install --with-deps chromium && npm run test:e2e
 
 # --- observability + dev profile ---
 obs.up: ## Start observability stack (prometheus + grafana + loki + otel + mailpit)

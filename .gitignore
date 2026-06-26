@@ -21,6 +21,12 @@ dist/
 .turbo/
 .parcel-cache/
 *.tsbuildinfo
+
+# --- frontend tests ---
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/coverage/
 .eslintcache
 npm-debug.log*
 yarn-debug.log*
