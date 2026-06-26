@@ -1,11 +1,22 @@
 SHELL := /bin/bash
 COMPOSE := docker compose -f deploy/docker-compose.yml --env-file .env
 
+# Isolated test stack (3FA bypass ON). Separate Compose project → its own
+# volumes/networks/containers, alt ports, never collides with the live stack.
+COMPOSE_TEST := docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.test.yml --env-file .env -p daedalus-test
+TEST_PORTS   := DAEDALUS_HTTPS_PORT=$(or $(TEST_HTTPS_PORT),9543) DAEDALUS_HTTP_PORT=$(or $(TEST_HTTP_PORT),9180)
+TEST_URL     := https://localhost:$(or $(TEST_HTTPS_PORT),9543)
+# Enough to drive every page; excludes agent workers (no quota spend, no creds).
+TEST_CORE    := caddy api iris frontend postgres redis minio
+# Adds the run pipeline for end-to-end agent testing (needs ~/.claude, spends quota).
+TEST_FULL    := $(TEST_CORE) hermes talos argus-worker litellm
+
 .PHONY: help up down logs ps restart build pull clean \
 	backend.dev frontend.dev backend.shell backend.test backend.lint \
 	migrate revision init seed-connectors reset-totp \
 	backup.now backup.list backup.restore backup.verify mint-cert \
-	llm.up llm.down llm.logs llm.pull llm.models
+	llm.up llm.down llm.logs llm.pull llm.models \
+	test.up test.up.full test.down test.logs test.ps test.url test.e2e
 
 help:
 	@grep -E '^[a-zA-Z_.-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -115,6 +126,23 @@ backup.verify: ## Restore-test the latest dump into a scratch DB (#21 — proves
 		PGPASSWORD=$$POSTGRES_PASSWORD psql -h $$POSTGRES_HOST -U $$POSTGRES_USER -d postgres \
 			-c "DROP DATABASE daedalus_restore_check"; \
 		echo "restore verified OK"'
+
+# --- isolated test stack (3FA bypass) ---
+test.up: ## Bring up the isolated test stack (3FA bypass ON, alt ports, core services only)
+	$(TEST_PORTS) $(COMPOSE_TEST) up -d --build $(TEST_CORE)
+	@echo "Test stack up → $(TEST_URL)  (Login page shows a 'Test login (skip 3FA)' button)"
+test.up.full: ## Test stack incl. agent run pipeline (needs ~/.claude creds; spends Claude quota)
+	$(TEST_PORTS) $(COMPOSE_TEST) up -d --build $(TEST_FULL)
+test.down: ## Tear down the test stack AND its volumes (disposable DB)
+	$(COMPOSE_TEST) down -v
+test.logs: ## Tail test-stack logs
+	$(COMPOSE_TEST) logs -f --tail=200
+test.ps: ## List test-stack services
+	$(COMPOSE_TEST) ps
+test.url: ## Print the test-stack URL
+	@echo "$(TEST_URL)"
+test.e2e: ## Run Playwright against the test stack (uses the 3FA-bypass login)
+	cd frontend && E2E_BASE_URL=$(TEST_URL) npm run test:e2e
 
 clean: ## Remove dist + caches (does not touch volumes)
 	rm -rf backend/.pytest_cache backend/.ruff_cache backend/.mypy_cache

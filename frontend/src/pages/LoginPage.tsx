@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, apiJson } from "../api";
 import { useApp } from "../store";
@@ -13,6 +13,29 @@ export default function LoginPage() {
   const [otp, setOtp] = useState("");
   const [totp, setTotp] = useState("");
   const [busy, setBusy] = useState(false);
+  // Set only on a stack started with the test-auth bypass (the prod compose
+  // never wires the flag in, so this is always false in production).
+  const [bypass, setBypass] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const res = await api<{ test_bypass?: boolean }>("/api/v1/auth/status");
+      setBypass(!!res?.test_bypass);
+    })();
+  }, []);
+
+  async function testLogin() {
+    setBusy(true);
+    try {
+      await apiJson("/api/v1/auth/test-login", email ? { email } : {});
+      setAuthed(true);
+      navigate("/", { replace: true });
+    } catch (err: any) {
+      flash(err.message || "Test login failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submitPassword(e: FormEvent) {
     e.preventDefault();
@@ -88,6 +111,25 @@ export default function LoginPage() {
         <p className="mb-4 text-xs text-muted">
           mTLS &amp; 3-factor login. Your client cert was already accepted at TLS handshake.
         </p>
+        {bypass && (
+          <div className="mb-4 rounded border border-warning/50 bg-warning/10 p-3">
+            <p className="mb-2 text-xs font-medium text-warning">
+              ⚠ TEST MODE — 3FA bypass is enabled on this stack.
+            </p>
+            <button
+              type="button"
+              onClick={testLogin}
+              disabled={busy}
+              className="btn btn-primary w-full"
+              data-testid="test-login"
+            >
+              {busy ? "Signing in…" : "🧪 Test login (skip 3FA)"}
+            </button>
+            <p className="mt-2 text-[11px] text-muted">
+              Signs in as <code>{email || "owner@daedalus.test"}</code> with no factors.
+            </p>
+          </div>
+        )}
         {step === "password" && (
           <form onSubmit={submitPassword} className="space-y-3">
             <div>

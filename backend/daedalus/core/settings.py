@@ -173,6 +173,23 @@ class Settings(BaseSettings):
     # #23 allow a passkey to act as the primary factor (off = 3-step today).
     passkey_primary_enabled: bool = Field(False, alias="PASSKEY_PRIMARY_ENABLED")
 
+    # --- TEST-ONLY auth bypass ------------------------------------------------
+    # When True, exposes POST /api/v1/auth/test-login, which mints a session for
+    # an owner account WITHOUT password/email-OTP/TOTP — so the UI can be driven
+    # end-to-end (Playwright, manual QA) with zero 3FA friction and zero
+    # assumptions. This DEFEATS authentication entirely; it must never be on in
+    # production.
+    #
+    # Defence in depth:
+    #   1. Default False.
+    #   2. The PRODUCTION compose (deploy/docker-compose.yml x-common-env) does
+    #      NOT forward TEST_AUTH_BYPASS_ENABLED into any container, so setting it
+    #      in .env has no effect on the live stack — only the dedicated
+    #      deploy/docker-compose.test.yml override wires it in (separate project,
+    #      separate volumes, alt ports). See docs/TESTING.md.
+    #   3. The endpoint 404s (does not merely 403) when off, so it is invisible.
+    test_auth_bypass_enabled: bool = Field(False, alias="TEST_AUTH_BYPASS_ENABLED")
+
 
 @lru_cache
 def get_settings() -> Settings:

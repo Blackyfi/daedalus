@@ -1,6 +1,7 @@
 """3-step login: password → email OTP → TOTP."""
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
@@ -22,7 +23,7 @@ from daedalus.auth.sessions import (
 )
 from daedalus.core.settings import get_settings
 from daedalus.db.base import get_session
-from daedalus.db.models import User
+from daedalus.db.models import Role, User
 from daedalus.db.redis import get_redis
 
 router = APIRouter()
@@ -335,23 +336,29 @@ async def status_probe(
     keeps the browser console clean (a 401 from the auth probe at every
     page load looks like a bug, even though it's the intended signal).
     """
+    settings = get_settings()
+    # Surfaced unauthenticated too, so the login page can show the test-login
+    # affordance before any session exists. Always False in production (the
+    # prod compose never wires the flag in — see Settings.test_auth_bypass_enabled).
+    bypass = settings.test_auth_bypass_enabled
     fp = (cert_fp or "").lower() or (
-        NO_MTLS_SENTINEL if not get_settings().require_client_cert else None
+        NO_MTLS_SENTINEL if not settings.require_client_cert else None
     )
     if not session_cookie or not fp:
-        return {"authenticated": False, "user": None}
+        return {"authenticated": False, "user": None, "test_bypass": bypass}
     sid = unsign_session_id(
         session_cookie,
-        max_age_seconds=get_settings().session_hard_hours * 3600,
+        max_age_seconds=settings.session_hard_hours * 3600,
     )
     if sid is None:
-        return {"authenticated": False, "user": None}
+        return {"authenticated": False, "user": None, "test_bypass": bypass}
     loaded = await load_session(db, sid, cert_fp=fp)
     if not loaded:
-        return {"authenticated": False, "user": None}
+        return {"authenticated": False, "user": None, "test_bypass": bypass}
     _, user = loaded
     return {
         "authenticated": True,
+        "test_bypass": bypass,
         "user": {
             "id": str(user.id),
             "email": user.email,
@@ -381,3 +388,63 @@ async def logout(
             await db.commit()
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"status": "ok"}
+
+
+# --- TEST-ONLY auth bypass ---------------------------------------------------
+# Mints a session with NO factors so the UI can be exercised end-to-end without
+# 3FA. Gated hard behind Settings.test_auth_bypass_enabled (default off; never
+# wired into the production compose). 404s when disabled so it's invisible.
+
+class TestLoginIn(BaseModel):
+    email: EmailStr | None = None
+    display_name: str | None = None
+
+
+@router.post("/test-login")
+async def test_login(
+    body: TestLoginIn,
+    request: Request,
+    response: Response,
+    cert_fp: Annotated[str | None, Header(alias="X-Client-Cert-Fingerprint")] = None,
+    db: AsyncSession = Depends(get_session),
+):
+    """TEST-ONLY: log in with no factors. Find-or-creates an owner so a freshly
+    migrated DB is immediately drivable. 404 unless the bypass flag is set."""
+    settings = get_settings()
+    if not settings.test_auth_bypass_enabled:
+        # 404 (not 403): the endpoint should not betray its own existence on a
+        # stack where the bypass isn't enabled.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    cert_fp = _resolve_cert_fp(cert_fp)
+    email = (body.email or "owner@daedalus.test").lower()
+    user = await _load_user(db, email)
+    if user is None:
+        user = User(
+            email=email,
+            display_name=body.display_name or "Test Owner",
+            role=Role.owner,
+            # Unusable random hash: the column is NOT NULL and this account must
+            # never be reachable through the real password flow.
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+        )
+        db.add(user)
+        await db.flush()
+    if not user.pinned_cert_fingerprint:
+        user.pinned_cert_fingerprint = cert_fp
+    user.failed_login_count = 0
+    user.locked_until = None
+    user.last_login_at = datetime.now(UTC)
+
+    sess = await create_session(db, user, cert_fp=cert_fp, ip=_ip(request))
+    cookie = sign_session_id(sess.id)
+    response.set_cookie(
+        COOKIE_NAME, cookie,
+        max_age=settings.session_hard_hours * 3600,
+        httponly=True, secure=True, samesite="strict", path="/",
+    )
+    await audit.record(
+        db, actor_user_id=user.id, actor_ip=_ip(request), actor_cert_fp=cert_fp,
+        action="auth.test_login", target_kind="user", target_id=str(user.id),
+    )
+    await db.commit()
+    return {"status": "ok", "user": {"id": str(user.id), "email": user.email, "role": user.role.value}}
