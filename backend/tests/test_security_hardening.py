@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from daedalus.auth import totp
-from daedalus.core.settings import Settings, get_settings
+from daedalus.core.settings import Settings
 
 
 def test_totp_secret_encrypt_decrypt_roundtrip() -> None:
@@ -36,8 +36,18 @@ def test_corrupt_ciphertext_fails_closed() -> None:
 
 
 def test_internal_key_falls_back_to_session_secret() -> None:
-    s = get_settings()
-    assert s.internal_key == s.session_secret
+    # Hermetic: construct Settings with no env file and no dedicated internal
+    # key. `get_settings()` would read the ambient env (which, in a deployed
+    # stack, sets INTERNAL_API_KEY), so it can't exercise the fallback.
+    s = Settings(
+        _env_file=None,
+        database_url="postgresql+asyncpg://x/x",
+        redis_url="redis://x",
+        session_secret="sek-fallback",
+        password_pepper="pep",
+        internal_api_key=None,
+    )
+    assert s.internal_key == s.session_secret == "sek-fallback"
 
 
 def test_internal_key_prefers_dedicated(monkeypatch) -> None:

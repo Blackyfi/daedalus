@@ -14,7 +14,7 @@ from daedalus.api.schemas import ArgusOut, InjectIn, ResizeIn, RunOut, SnapshotO
 from daedalus.auth.audit import record
 from daedalus.auth.dependencies import current_user
 from daedalus.db.base import get_session
-from daedalus.db.models import ArgusReport, Project, Role, Run, Snapshot, Task, User
+from daedalus.db.models import ArgusReport, Project, Role, Run, RunKind, Snapshot, Task, User
 from daedalus.git_status import needs_pull as git_needs_pull
 from daedalus.hermes.client import HermesClient
 from daedalus.storage.objects import get_object_store
@@ -377,8 +377,25 @@ async def argus_report(
     db: AsyncSession = Depends(get_session),
 ):
     await _run_for(user, db, rid)
+    # `rid` may be the argus run id (direct) or the task run id (what the SPA
+    # holds). Try the direct link first, then resolve via the argus run whose
+    # source_run_id points back at this task run.
     res = await db.execute(select(ArgusReport).where(ArgusReport.run_id == rid))
     rpt = res.scalar_one_or_none()
+    if not rpt:
+        argus_run = (
+            await db.execute(
+                select(Run.id).where(
+                    Run.source_run_id == rid, Run.kind == RunKind.argus
+                )
+            )
+        ).scalar_one_or_none()
+        if argus_run is not None:
+            rpt = (
+                await db.execute(
+                    select(ArgusReport).where(ArgusReport.run_id == argus_run)
+                )
+            ).scalar_one_or_none()
     if not rpt:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return rpt

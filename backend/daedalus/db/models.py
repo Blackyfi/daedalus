@@ -355,6 +355,12 @@ class Run(Base, TimestampMixin):
     retry_of: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("runs.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # For an argus (kind=argus) run, the task-kind run it verifies. Lets the
+    # API resolve a run's Argus report by the *task* run id (what the UI holds)
+    # rather than only by the separate argus run id. NULL for non-argus runs.
+    source_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     # True iff Talos detected a Claude rate-limit (`rate_limit_event` with
     # status="rejected") in this run's transcript. The connector is then
     # paused via Redis until `retry_after`, the parent task is reset to

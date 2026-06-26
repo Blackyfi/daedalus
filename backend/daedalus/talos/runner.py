@@ -430,6 +430,12 @@ class TalosRunner:
 
             if input_text:
                 session.write_text(input_text)
+                if _should_close_stdin(connector_spec):
+                    # Batch-style connector: the agent reads the piped prompt
+                    # and exits. Without EOF the process blocks forever and is
+                    # only reaped by the idle timeout (marking the run failed),
+                    # so an exit_code done-signal can never fire.
+                    session.send_eof()
 
             self._wait_for_completion(ctx, connector_spec)
 
@@ -945,6 +951,24 @@ class TalosRunner:
             "talos.pythia_started",
             refresh_seconds=self.settings.pythia_refresh_seconds,
         )
+
+
+def _should_close_stdin(connector_spec: dict) -> bool:
+    """Whether to send EOF after piping the prompt to a stdin_prompt connector.
+
+    Explicit ``input_format.close_stdin`` wins. Otherwise default to closing
+    when the done-signal is ``exit_code`` (batch semantics: read prompt → run →
+    exit), and leave it open for ``regex``/``tool_call`` connectors (e.g. Claude
+    Code, Qwen) that keep reading stdin while running and signal completion via
+    their output stream.
+    """
+    input_format = connector_spec.get("input_format", {})
+    explicit = input_format.get("close_stdin")
+    if explicit is not None:
+        return bool(explicit)
+    if input_format.get("kind") != "stdin_prompt":
+        return False
+    return connector_spec.get("done_signal", {}).get("kind") == "exit_code"
 
 
 def _detect_rate_limit(transcript_text: str) -> tuple[bool, str | None]:

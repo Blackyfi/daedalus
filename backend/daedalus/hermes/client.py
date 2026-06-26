@@ -157,6 +157,7 @@ class HermesClient:
                 lane=PriorityLane.default,
                 connector_snapshot=run.connector_snapshot,
                 worktree_path=run.worktree_path,
+                source_run_id=run.id,
             ),
         )
 

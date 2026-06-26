@@ -40,10 +40,31 @@ class PTYSession:
         self._output_lock = threading.Lock()
         self._on_output: list[Callable[[bytes], None]] = []
         self._closed = False
+        # Serializes isalive() across threads. ptyprocess.isalive() calls
+        # waitpid(); the streamer thread and the completion loop both poll
+        # liveness, so concurrent calls race to reap the child — the loser's
+        # waitpid raises ChildProcessError ("No child processes"), which used
+        # to bubble up and mislabel a successful run as failed/exit -1.
+        self._wait_lock = threading.Lock()
+
+    def _isalive(self) -> bool:
+        """Thread-safe liveness check that never raises.
+
+        A reaped/never-spawned child is simply "not alive". Swallowing the
+        teardown-race exception here (rather than letting it propagate) is the
+        whole point — see _wait_lock.
+        """
+        if self._proc is None:
+            return False
+        with self._wait_lock:
+            try:
+                return self._proc.isalive()
+            except (ptyprocess.PtyProcessError, ChildProcessError, OSError):
+                return False
 
     @property
     def is_running(self) -> bool:
-        return self._proc is not None and self._proc.isalive()
+        return self._isalive()
 
     @property
     def exit_code(self) -> int | None:
@@ -89,13 +110,22 @@ class PTYSession:
 
     def write(self, data: bytes) -> None:
         """Write bytes to the PTY master (sent to the agent)."""
-        if self._proc and self._proc.isalive():
+        if self._proc and self._isalive():
             self._proc.write(data)
             log.debug("pty.write", length=len(data))
 
     def write_text(self, text: str) -> None:
         """Write text to the PTY master."""
         self.write(text.encode())
+
+    def send_eof(self) -> None:
+        """Send EOF (Ctrl-D) on stdin so a process reading to end-of-input
+        can finish. Required for non-interactive, batch-style connectors
+        (e.g. ``bash``/``cat``/codex) whose prompt is piped via the PTY — they
+        block forever otherwise and only die via the idle timeout. ``\\x04``
+        works for both canonical-mode reads and readline (EOF on an empty
+        line), so it is the universal end-of-input signal on a PTY."""
+        self.write(b"\x04")
 
     def send_signal(self, sig: int) -> None:
         """Signal the child's whole process group, not just the leader.
@@ -105,7 +135,7 @@ class PTYSession:
         children — git, ssh, verify scripts — die with the run instead of
         being orphaned to the container init and lingering as zombies.
         """
-        if self._proc and self._proc.isalive():
+        if self._proc and self._isalive():
             try:
                 os.killpg(os.getpgid(self._proc.pid), sig)
                 log.info("pty.signal", signal=sig, pid=self._proc.pid)
@@ -118,7 +148,7 @@ class PTYSession:
 
     def kill(self, grace_seconds: int = 5) -> None:
         """Send SIGTERM, then SIGKILL after grace period."""
-        if not (self._proc and self._proc.isalive()):
+        if not (self._proc and self._isalive()):
             return
         self.send_signal(signal.SIGTERM)
         if self._wait_for_exit(grace_seconds):
@@ -132,10 +162,10 @@ class PTYSession:
             return True
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            if not self._proc.isalive():
+            if not self._isalive():
                 return True
             time.sleep(poll)
-        return not self._proc.isalive()
+        return not self._isalive()
 
     def pause(self) -> None:
         """Send SIGSTOP to freeze the process."""
@@ -159,7 +189,7 @@ class PTYSession:
 
     def resize(self, rows: int, cols: int) -> None:
         """Resize the PTY."""
-        if self._proc and self._proc.isalive():
+        if self._proc and self._isalive():
             self._proc.setwinsize(rows, cols)
 
     def on_output(self, callback: Callable[[bytes], None]) -> None:
@@ -169,14 +199,14 @@ class PTYSession:
     def close(self) -> None:
         """Clean up the PTY session."""
         self._closed = True
-        if self._proc and self._proc.isalive():
+        if self._proc and self._isalive():
             self.kill()
         if self._reader_thread:
             self._reader_thread.join(timeout=2)
 
     def _read_loop(self) -> None:
         """Background thread that reads from the PTY master."""
-        while self._proc and self._proc.isalive() and not self._closed:
+        while self._proc and self._isalive() and not self._closed:
             try:
                 ready, _, _ = select.select([self._proc.fd], [], [], 0.1)
                 if not ready:

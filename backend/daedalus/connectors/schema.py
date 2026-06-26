@@ -47,6 +47,15 @@ CONNECTOR_SCHEMA: dict = {
                 "template": {
                     "type": "string",
                 },
+                "close_stdin": {
+                    "type": "boolean",
+                    "description": (
+                        "Send EOF after piping the prompt. Defaults to true for "
+                        "stdin_prompt connectors whose done_signal is exit_code "
+                        "(batch tools that read the prompt then exit); set false "
+                        "for interactive agents that keep reading stdin."
+                    ),
+                },
             },
         },
         "done_signal": {
