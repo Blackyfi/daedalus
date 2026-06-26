@@ -6,7 +6,7 @@ from daedalus.merge.resolution import (
     reconcile_resolution_states,
     resolve_next_conflict,
 )
-from daedalus.merge.ship import ShipResult, ship_batch
+from daedalus.merge.ship import ShipResult, UndoResult, ship_batch, undo_ship
 
 __all__ = [
     "BatchResult",
@@ -14,10 +14,12 @@ __all__ = [
     "BranchPlan",
     "ResolutionStep",
     "ShipResult",
+    "UndoResult",
     "execute_batch",
     "plan_batch",
     "reconcile_resolution_states",
     "resolve_next_conflict",
     "select_candidates",
     "ship_batch",
+    "undo_ship",
 ]

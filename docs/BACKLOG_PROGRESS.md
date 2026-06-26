@@ -12,7 +12,7 @@ Status: ✅ done+deployed · 🚧 in progress · ⏳ queued · 🟡 implemented-
 - ✅ #8 Argus tamper-gate + evidence-anchored rubric (deterministic fake-green gate forces non-pass; 7 tests)
 
 ## P2
-- ⏳ #9 Reversibility / one-click Undo on ship/merge
+- ✅ #9 Reversibility / one-click Undo on ship (API + pre_ship_oid + migration 0013; FF-safety guard; UI button in frontend wave). Also added an app-import smoke test that catches route-module import errors.
 - ⏳ #10 Editable plan-review with inline steering comments
 - ⏳ #11 Guided first-run wizard
 - ⏳ #12 Broker short-lived creds (no mounted ~/.ssh/~/.claude)

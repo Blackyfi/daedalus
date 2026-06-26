@@ -38,6 +38,7 @@ from daedalus.merge import (
     resolve_next_conflict,
     select_candidates,
     ship_batch,
+    undo_ship,
 )
 
 router = APIRouter()
@@ -442,5 +443,45 @@ async def merge_batch_ship(
         default_branch=result.default_branch,
         pruned_branches=result.pruned_branches,
         removed_worktree=result.removed_worktree,
+        error=result.error,
+    )
+
+
+class UndoResultOut(BaseModel):
+    state: str
+    default_branch: str
+    reset_to: str | None = None
+    error: str | None = None
+
+
+@router.post("/{pid}/merge-batches/{bid}/undo", response_model=UndoResultOut)
+async def merge_batch_undo(
+    pid: uuid.UUID,
+    bid: uuid.UUID,
+    user: Annotated[User, Depends(current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> UndoResultOut:
+    """One-click undo of a ship: reset the default branch to its pre-ship tip
+    (refused if it has advanced past the shipped commit)."""
+    batch, _ = await _load_batch(db, pid, bid, user)
+    result = await undo_ship(db, batch_id=batch.id)
+    await audit_record(
+        db,
+        actor_user_id=user.id,
+        action="project.merge_batch.undo",
+        target_kind="merge_batch",
+        target_id=str(bid),
+        payload={
+            "state": result.state,
+            "default_branch": result.default_branch,
+            "reset_to": result.reset_to,
+            "error": result.error,
+        },
+    )
+    await db.commit()
+    return UndoResultOut(
+        state=result.state,
+        default_branch=result.default_branch,
+        reset_to=result.reset_to,
         error=result.error,
     )

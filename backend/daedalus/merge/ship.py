@@ -100,6 +100,11 @@ async def ship_batch(
             ),
         )
 
+    # Capture the pre-ship default-branch tip so the ship can be undone (#9).
+    rc, pre_oid, _ = await _git(workspace, "rev-parse", f"refs/heads/{default_branch}")
+    if rc == 0 and pre_oid.strip():
+        batch.pre_ship_oid = pre_oid.strip()
+
     # Update default branch by pointing its ref at the integration tip.
     # This avoids touching whatever worktree is checked out on default.
     rc, integ_oid, err = await _git(workspace, "rev-parse", batch.integration_branch)
@@ -194,6 +199,65 @@ async def ship_batch(
         pruned_branches=pruned,
         removed_worktree=removed,
     )
+
+
+@dataclass
+class UndoResult:
+    state: str  # "reverted" | "failed"
+    default_branch: str
+    reset_to: str | None = None
+    error: str | None = None
+
+
+async def undo_ship(db: AsyncSession, batch_id: uuid.UUID) -> UndoResult:
+    """Reset the default branch back to its pre-ship tip (#9).
+
+    Refuses if the default branch has advanced past what we shipped (someone
+    committed after the ship) — undoing then would silently drop their work.
+    """
+    batch = await db.get(MergeBatch, batch_id)
+    if batch is None:
+        return UndoResult(state="failed", default_branch="", error="batch not found")
+    if batch.state != MergeBatchState.shipped or not batch.pre_ship_oid:
+        return UndoResult(
+            state="failed",
+            default_branch="",
+            error="batch was not shipped (nothing to undo)",
+        )
+    project = await db.get(Project, batch.project_id)
+    if project is None:
+        return UndoResult(state="failed", default_branch="", error="project gone")
+
+    workspace = project.workspace_path
+    default_branch = project.git_default_branch
+
+    rc, integ_oid, _ = await _git(workspace, "rev-parse", batch.integration_branch)
+    rc2, cur_oid, _ = await _git(workspace, "rev-parse", f"refs/heads/{default_branch}")
+    if rc2 != 0 or not cur_oid.strip():
+        return UndoResult(
+            state="failed", default_branch=default_branch, error="cannot resolve default branch"
+        )
+    # The shipped tip is the integration tip; if default has moved past it,
+    # refuse so we never discard post-ship commits.
+    shipped_tip = integ_oid.strip() if rc == 0 else ""
+    if shipped_tip and cur_oid.strip() != shipped_tip:
+        return UndoResult(
+            state="failed",
+            default_branch=default_branch,
+            error=(
+                f"{default_branch} has advanced past the shipped commit; undo refused "
+                "to avoid dropping newer work."
+            ),
+        )
+    rc, _, err = await _git(
+        workspace, "update-ref", f"refs/heads/{default_branch}", batch.pre_ship_oid
+    )
+    if rc != 0:
+        return UndoResult(
+            state="failed", default_branch=default_branch, error=f"update-ref failed: {err.strip()}"
+        )
+    batch.state = MergeBatchState.awaiting_review
+    return UndoResult(state="reverted", default_branch=default_branch, reset_to=batch.pre_ship_oid)
 
 
 async def _git(cwd: str, *args: str) -> tuple[int, str, str]:

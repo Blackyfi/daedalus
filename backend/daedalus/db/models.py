@@ -517,6 +517,9 @@ class MergeBatch(Base, TimestampMixin):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     require_argus_pass: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Default-branch tip immediately before the fast-forward ship, so the ship
+    # can be undone with a one-click reset (#9). NULL until shipped.
+    pre_ship_oid: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     items: Mapped[list[MergeBatchItem]] = relationship(
         back_populates="batch", cascade="all, delete-orphan"
