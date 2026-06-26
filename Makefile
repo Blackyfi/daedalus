@@ -4,7 +4,10 @@ COMPOSE := docker compose -f deploy/docker-compose.yml --env-file .env
 # Isolated test stack (3FA bypass ON). Separate Compose project → its own
 # volumes/networks/containers, alt ports, never collides with the live stack.
 COMPOSE_TEST := docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.test.yml --env-file .env -p daedalus-test
-TEST_PORTS   := DAEDALUS_HTTPS_PORT=$(or $(TEST_HTTPS_PORT),9543) DAEDALUS_HTTP_PORT=$(or $(TEST_HTTP_PORT),9180)
+# Isolated workspaces root so a test run can NEVER mutate the operator's real
+# repos (talos mounts this RW). Disposable; created on demand.
+TEST_WS      := $(CURDIR)/deploy/test-workspaces
+TEST_PORTS   := DAEDALUS_HTTPS_PORT=$(or $(TEST_HTTPS_PORT),9543) DAEDALUS_HTTP_PORT=$(or $(TEST_HTTP_PORT),9180) HOST_WORKSPACES_ROOT=$(TEST_WS)
 TEST_URL     := https://localhost:$(or $(TEST_HTTPS_PORT),9543)
 # Enough to drive every page; excludes agent workers (no quota spend, no creds).
 TEST_CORE    := caddy api iris frontend postgres redis minio
@@ -16,7 +19,7 @@ TEST_FULL    := $(TEST_CORE) hermes talos argus-worker litellm
 	migrate revision init seed-connectors reset-totp \
 	backup.now backup.list backup.restore backup.verify mint-cert \
 	llm.up llm.down llm.logs llm.pull llm.models \
-	test.up test.up.full test.down test.logs test.ps test.url test.e2e
+	test.up test.up.full test.down test.logs test.ps test.url test.e2e test.e2e.pipeline
 
 help:
 	@grep -E '^[a-zA-Z_.-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
@@ -143,6 +146,8 @@ test.url: ## Print the test-stack URL
 	@echo "$(TEST_URL)"
 test.e2e: ## Run Playwright against the test stack (uses the 3FA-bypass login)
 	cd frontend && E2E_BASE_URL=$(TEST_URL) npm run test:e2e
+test.e2e.pipeline: ## Provision run state on the test stack then drive #9 ship-undo + #10 plan steering (needs `make test.up.full`)
+	TEST_URL=$(TEST_URL) deploy/e2e-pipeline.sh
 
 clean: ## Remove dist + caches (does not touch volumes)
 	rm -rf backend/.pytest_cache backend/.ruff_cache backend/.mypy_cache

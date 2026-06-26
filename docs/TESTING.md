@@ -34,8 +34,33 @@ make test.down      # tear it down AND drop its volumes (disposable DB)
 `make test.up` brings up only the core services (caddy, api, iris, frontend,
 postgres, redis, minio) — enough to drive every page, with **no agent workers**,
 so it spends no Claude quota and needs no credentials. `make test.up.full` adds
-the run pipeline (hermes/talos/argus/litellm) for end-to-end agent runs; that one
-needs your `~/.claude` creds mounted and **does** spend quota.
+the run pipeline (hermes/talos/argus/litellm) for end-to-end agent runs.
+
+## End-to-end run pipeline (#9 ship-undo, #10 plan steering)
+
+```bash
+make test.up.full        # adds hermes/talos/argus/litellm, isolated workspace
+make test.e2e.pipeline   # provisions run state, drives the ship-undo + steering UIs
+```
+
+`test.up.full` points the run workers at an **isolated** workspaces root
+(`deploy/test-workspaces/`, mounted RW for Talos) so a test run can never mutate
+your real repos. It also pins `api` + `hermes` to **uid 1000** (matching Talos):
+in prod those run as root, and on a fresh fixture repo that uid split makes
+Talos's auto-commit fail ("Permission denied" on the branch reflog), so a run
+produces no commits. Pinning the uid lets a run actually commit, which the
+merge/ship/undo flow needs. The bundled `shell-repo-demo` connector is a
+deterministic, LLM-free agent that appends to a tracked file (unlike `shell-demo`,
+which writes to `/tmp`), giving a real git diff to ship without spending quota.
+
+`make test.e2e.pipeline` (script: `deploy/e2e-pipeline.sh`) seeds a committed run
+→ `awaiting_review` batch and a pending plan, then runs `frontend/e2e/pipeline.spec.ts`.
+
+> Driving this flow live is how the `shipped → awaiting_review` regression was
+> caught: the merge status poll reset a freshly shipped batch back to
+> awaiting_review, silently disabling one-click ship-undo. Fixed in
+> `merge/resolution.py` (the reconciler now leaves terminal states alone) with a
+> regression test in `backend/tests/test_merge_reconcile_ship.py`.
 
 ## The bypass
 

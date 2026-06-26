@@ -1,0 +1,49 @@
+{
+  "id": "shell-repo-demo",
+  "display_name": "Shell Repo Demo (test fixture)",
+  "description": "Deterministic, LLM-free connector that appends the task prompt to a tracked file IN the project repo (unlike shell-demo, which writes to /tmp). Lets end-to-end run -> merge -> ship -> undo be exercised against a real git diff without spending model quota. Intended for the isolated test stack.",
+  "command": "bash",
+  "args": [
+    "-lc",
+    "cat >> daedalus_e2e.txt && printf 'DONE\\n'"
+  ],
+  "workdir": "{{project.workspace_path}}",
+  "permission_profile": "confirm",
+  "input_format": {
+    "kind": "stdin_prompt",
+    "template": "{{task.title}}\n\n{{task.description}}\n",
+    "close_stdin": true
+  },
+  "done_signal": {
+    "kind": "exit_code",
+    "exit_code": 0
+  },
+  "exit_on_done": true,
+  "verify_commands": [
+    "test -f daedalus_e2e.txt"
+  ],
+  "argus_profile": {
+    "command": "bash",
+    "args": [
+      "-lc",
+      "printf 'argus verification stub\\n'"
+    ],
+    "workdir_readonly": true
+  },
+  "resource_limits": {
+    "cpu_shares": 256,
+    "memory_mb": 256,
+    "wall_clock_minutes": 10,
+    "idle_output_minutes": 2
+  },
+  "interrupt": {
+    "soft": "SIGINT",
+    "hard": "SIGTERM",
+    "kill_grace_seconds": 2
+  },
+  "tags": [
+    "demo",
+    "shell",
+    "test"
+  ]
+}

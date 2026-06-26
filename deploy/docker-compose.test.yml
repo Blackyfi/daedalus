@@ -20,10 +20,22 @@
 # even if present in .env. This override is the only thing that wires it in.
 
 services:
+  # The api process creates each run's git worktree + branch in-process
+  # (HermesClient._ensure_worktree) and runs the merge/ship/undo git ops, while
+  # Talos commits the agent's edits as uid 1000. In prod api/hermes run as root,
+  # so on a fresh fixture repo that uid split makes Talos's auto-commit fail
+  # ("Permission denied" appending the branch reflog) and a run produces no
+  # commits — which the merge/ship/undo flow needs. On the disposable test stack
+  # we pin every git writer to the same uid as Talos so runs actually commit.
+  # HOME is moved to the image's pre-baked daedalus user so the entrypoint's
+  # ssh-copy step has a writable home.
   api:
+    user: "1000:1000"
     environment:
-      # Exposes POST /api/v1/auth/test-login (mints a session with no factors).
       TEST_AUTH_BYPASS_ENABLED: "true"
-      # No mTLS at the proxy on the test stack; the bypass binds the session to
-      # the NO_MTLS sentinel instead of a client-cert fingerprint.
       REQUIRE_CLIENT_CERT: "false"
+      HOME: /home/daedalus
+  hermes:
+    user: "1000:1000"
+    environment:
+      HOME: /home/daedalus

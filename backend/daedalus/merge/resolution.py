@@ -273,6 +273,16 @@ async def reconcile_resolution_states(
             )
         changed.append(item.id)
 
+    # This reconciler only owns the conflict-resolution lifecycle, so it must
+    # only ever move a batch that is still *resolving* (or already sitting in
+    # awaiting_review). Without this guard the "all conflicts cleared" branch
+    # below would clobber post-review terminal states — most visibly it reset a
+    # freshly `shipped` batch back to `awaiting_review` on the next status poll
+    # (shipped_at stays set, state regresses), which silently broke one-click
+    # ship-undo. Leave shipping/shipped/failed/aborted/pending exactly as-is.
+    if batch.state not in (MergeBatchState.resolving, MergeBatchState.awaiting_review):
+        return changed
+
     # If every item is either merged/resolved or skipped-non-conflict, advance
     # the batch.
     items_all = (
