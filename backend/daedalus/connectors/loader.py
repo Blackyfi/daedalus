@@ -16,6 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from daedalus.connectors.schema import CONNECTOR_SCHEMA
+from daedalus.connectors.signing import load_pubkey, verify_signature
+from daedalus.core.settings import get_settings
 from daedalus.db.models import Connector
 
 
@@ -35,13 +37,34 @@ async def import_connectors_from_dir(db: AsyncSession, directory: str | Path) ->
         raise ConnectorImportError(f"no connector JSON files found in {directory}")
 
     validator = Draft202012Validator(CONNECTOR_SCHEMA)
+
+    # Optional, fail-closed signature gate (#14). Off unless required + key set.
+    settings = get_settings()
+    signing_pubkey = None
+    if settings.connector_signing_required:
+        if not settings.connector_signing_pubkey:
+            raise ConnectorImportError(
+                "CONNECTOR_SIGNING_REQUIRED is set but CONNECTOR_SIGNING_PUBKEY is missing"
+            )
+        try:
+            signing_pubkey = load_pubkey(settings.connector_signing_pubkey)
+        except ValueError as exc:
+            raise ConnectorImportError(f"invalid connector signing key: {exc}") from exc
+
     added = 0
     updated = 0
     ids: list[str] = []
 
     for file_path in files:
+        raw = file_path.read_bytes()
+        if signing_pubkey is not None:
+            sig_path = file_path.with_suffix(file_path.suffix + ".sig")
+            if not sig_path.is_file():
+                raise ConnectorImportError(f"{file_path.name}: missing signature {sig_path.name}")
+            if not verify_signature(raw, sig_path.read_text(), signing_pubkey):
+                raise ConnectorImportError(f"{file_path.name}: signature verification failed")
         try:
-            spec = json.loads(file_path.read_text())
+            spec = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ConnectorImportError(f"{file_path.name}: invalid JSON: {exc}") from exc
         errors = sorted(validator.iter_errors(spec), key=lambda e: list(e.path))

@@ -153,6 +153,10 @@ class Settings(BaseSettings):
         "needs_fixes,run_failed,rate_limit_pause,anomaly", alias="NOTIFY_EVENTS"
     )
 
+    # --- connector signing (IMPROVEMENTS #14) — opt-in, fail-closed ---
+    connector_signing_required: bool = Field(False, alias="CONNECTOR_SIGNING_REQUIRED")
+    connector_signing_pubkey: str | None = Field(None, alias="CONNECTOR_SIGNING_PUBKEY")
+
 
 @lru_cache
 def get_settings() -> Settings:

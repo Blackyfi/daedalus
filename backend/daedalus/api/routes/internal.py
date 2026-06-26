@@ -138,5 +138,51 @@ async def generate_plan(
     }
 
 
+@router.post("/ci-failure", dependencies=[Depends(require_internal_key)])
+async def ingest_ci_failure(
+    body: dict[str, Any],
+    db: AsyncSession = Depends(get_session),
+):
+    """Turn an external CI failure into a fix-task in the project backlog
+    (IMPROVEMENTS #18). Lets a CI webhook feed the agent loop: the failing job
+    log becomes a task the agent picks up like any other.
+
+    Body: {project_id, log, title?, branch?, source?}.
+    """
+    project_id = body.get("project_id")
+    log_text = (body.get("log") or "").strip()
+    if not project_id or not log_text:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "project_id and log are required")
+    try:
+        pid = uuid.UUID(project_id)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid project_id") from exc
+    project = await db.get(Project, pid)
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
+
+    source = str(body.get("source") or "CI")
+    branch = body.get("branch")
+    title = (body.get("title") or f"Fix {source} failure").strip()[:240]
+    description = (
+        f"Automated from a {source} failure"
+        + (f" on branch `{branch}`" if branch else "")
+        + ".\n\nFix the code so the failing job passes. Failing log:\n\n"
+        + log_text[:8000]
+    )
+    task = Task(
+        project_id=pid,
+        title=title,
+        description=description,
+        acceptance_criteria="The previously-failing CI job/tests pass.",
+        connector_id=project.default_connector_id,
+        tags=["ci-failure"],
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    return {"status": "ok", "task_id": str(task.id)}
+
+
 # Kept exported so tests/test_internal_planning.py keeps importing the old name.
 __all__ = ["_idea_to_task_fields", "require_internal_key", "router"]

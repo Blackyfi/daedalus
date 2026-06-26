@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from daedalus.auth.audit_integrity import compute_entry_hash
 from daedalus.db.models import AuditEvent
 
 
@@ -19,6 +20,16 @@ async def record(
     target_id: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> None:
+    tid = str(target_id) if target_id is not None else None
+    entry_hash = compute_entry_hash(
+        action=action,
+        actor_user_id=actor_user_id,
+        actor_ip=actor_ip,
+        actor_cert_fp=actor_cert_fp,
+        target_kind=target_kind,
+        target_id=tid,
+        payload=payload or {},
+    )
     db.add(
         AuditEvent(
             actor_user_id=actor_user_id,
@@ -26,8 +37,9 @@ async def record(
             actor_cert_fp=actor_cert_fp,
             action=action,
             target_kind=target_kind,
-            target_id=str(target_id) if target_id is not None else None,
+            target_id=tid,
             payload=payload or {},
+            entry_hash=entry_hash,
         )
     )
     await db.flush()
