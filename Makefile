@@ -4,7 +4,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml --env-file .env
 .PHONY: help up down logs ps restart build pull clean \
 	backend.dev frontend.dev backend.shell backend.test backend.lint \
 	migrate revision init seed-connectors reset-totp \
-	backup.now backup.list backup.restore mint-cert \
+	backup.now backup.list backup.restore backup.verify mint-cert \
 	llm.up llm.down llm.logs llm.pull llm.models
 
 help:
@@ -100,6 +100,21 @@ backup.restore: ## Restore from a specific dump (use KEY=db/20260503T0230Z.sql.g
 		mc cp "daedalus/$$PG_BACKUP_BUCKET/$(KEY)" /tmp/restore.sql.gz && \
 		gunzip -c /tmp/restore.sql.gz | PGPASSWORD=$$POSTGRES_PASSWORD psql \
 			-h $$POSTGRES_HOST -U $$POSTGRES_USER -d $$POSTGRES_DB'
+backup.verify: ## Restore-test the latest dump into a scratch DB (#21 — proves backups are restorable)
+	$(COMPOSE) exec pg-backup bash -c '\
+		set -e; \
+		KEY=$$(mc ls --recursive "daedalus/$$PG_BACKUP_BUCKET/" | sort | tail -1 | awk "{print \$$NF}"); \
+		echo "verifying restore of $$KEY"; \
+		mc cp "daedalus/$$PG_BACKUP_BUCKET/$$KEY" /tmp/verify.sql.gz; \
+		PGPASSWORD=$$POSTGRES_PASSWORD psql -h $$POSTGRES_HOST -U $$POSTGRES_USER -d postgres \
+			-c "DROP DATABASE IF EXISTS daedalus_restore_check; CREATE DATABASE daedalus_restore_check"; \
+		gunzip -c /tmp/verify.sql.gz | PGPASSWORD=$$POSTGRES_PASSWORD psql \
+			-h $$POSTGRES_HOST -U $$POSTGRES_USER -d daedalus_restore_check >/dev/null; \
+		PGPASSWORD=$$POSTGRES_PASSWORD psql -h $$POSTGRES_HOST -U $$POSTGRES_USER -d daedalus_restore_check \
+			-c "SELECT count(*) AS tables FROM information_schema.tables WHERE table_schema='"'"'public'"'"'"; \
+		PGPASSWORD=$$POSTGRES_PASSWORD psql -h $$POSTGRES_HOST -U $$POSTGRES_USER -d postgres \
+			-c "DROP DATABASE daedalus_restore_check"; \
+		echo "restore verified OK"'
 
 clean: ## Remove dist + caches (does not touch volumes)
 	rm -rf backend/.pytest_cache backend/.ruff_cache backend/.mypy_cache

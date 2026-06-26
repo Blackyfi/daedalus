@@ -51,6 +51,29 @@ function PlanCard({ plan, projectId }: { plan: PlanProposal; projectId: string }
     },
   });
 
+  const [guidance, setGuidance] = useState("");
+
+  // Inline steering (#10): save the comment as a project note (the planning
+  // "playbook" #19 feeds back into the planner), then re-plan and drop this
+  // draft so the next proposal reflects the guidance.
+  const replan = useMutation({
+    mutationFn: async () => {
+      await apiJson(`/api/v1/projects/${projectId}/notes`, {
+        title: "Planning guidance",
+        body: guidance.trim(),
+      });
+      await apiJson(`/api/v1/plans/${plan.id}/discard`, {});
+      await apiJson(`/api/v1/projects/${projectId}/plan`, {});
+    },
+    onSuccess: () => {
+      setGuidance("");
+      qc.invalidateQueries({ queryKey: ["plans", projectId] });
+      qc.invalidateQueries({ queryKey: ["notes", projectId] });
+      flash("Saved guidance · re-planning", "success");
+    },
+    onError: (err: any) => flash(err.message || "Re-plan failed", "error"),
+  });
+
   function update(i: number, patch: Partial<ProposedTask>) {
     setTasks((prev) => prev.map((t, idx) => (idx === i ? { ...t, ...patch } : t)));
   }
@@ -137,6 +160,28 @@ function PlanCard({ plan, projectId }: { plan: PlanProposal; projectId: string }
             </div>
           </div>
         ))}
+      </div>
+      <div className="mt-3 border-t border-border pt-3">
+        <label className="mb-1 block text-xs text-muted">
+          Steer the plan — saved as project guidance, then re-planned
+        </label>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <textarea
+            className="field flex-1"
+            rows={2}
+            value={guidance}
+            onChange={(e) => setGuidance(e.target.value)}
+            placeholder="e.g. split the auth work into smaller tasks; prefer the yolo connector for migrations"
+          />
+          <button
+            className="btn"
+            type="button"
+            disabled={!guidance.trim() || replan.isPending}
+            onClick={() => replan.mutate()}
+          >
+            {replan.isPending ? "Re-planning…" : "Save guidance & re-plan"}
+          </button>
+        </div>
       </div>
     </article>
   );

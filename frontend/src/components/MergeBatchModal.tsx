@@ -255,6 +255,25 @@ export default function MergeBatchModal({ open, onClose, projectId, initialBatch
     onError: (err) => flash(err.message || "Ship failed", "error"),
   });
 
+  const undo = useMutation<{ state: string; reset_to: string | null; error: string | null }, Error, void>({
+    mutationFn: () =>
+      apiJson(
+        `/api/v1/projects/${projectId}/merge-batches/${activeBatchId}/undo`,
+        {},
+      ),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["merge-batch", activeBatchId] });
+      qc.invalidateQueries({ queryKey: ["git-status", projectId] });
+      qc.invalidateQueries({ queryKey: ["tasks", projectId] });
+      if (result.state === "reverted") {
+        flash(`Ship undone · ${defaultBranch} reset to ${result.reset_to?.slice(0, 8)}`, "success");
+      } else {
+        flash(result.error || "Undo failed", "error");
+      }
+    },
+    onError: (err) => flash(err.message || "Undo failed", "error"),
+  });
+
   // Reset which batch is active only when the modal opens or the caller
   // hands us a new initial batch. Keeping `onClose` out of the deps matters:
   // parents re-render frequently (polling queries), and a fresh arrow each
@@ -446,6 +465,8 @@ export default function MergeBatchModal({ open, onClose, projectId, initialBatch
               batch={batchData}
               defaultBranch={defaultBranch}
               onClose={onClose}
+              onUndo={() => undo.mutate()}
+              undoing={undo.isPending}
             />
           )}
 
@@ -913,17 +934,31 @@ function ShipFooter({
 
 function DoneFooter({
   batch: _batch,
-  defaultBranch: _defaultBranch,
+  defaultBranch,
   onClose,
+  onUndo,
+  undoing,
 }: {
   batch: MergeBatch;
   defaultBranch: string;
   onClose: () => void;
+  onUndo: () => void;
+  undoing: boolean;
 }) {
   return (
-    <button className="btn btn-primary" onClick={onClose}>
-      done
-    </button>
+    <>
+      <button
+        className="btn mr-auto"
+        onClick={onUndo}
+        disabled={undoing}
+        title={`Reset ${defaultBranch} back to its pre-ship commit`}
+      >
+        {undoing ? "Undoing…" : "↩ Undo ship"}
+      </button>
+      <button className="btn btn-primary" onClick={onClose}>
+        done
+      </button>
+    </>
   );
 }
 

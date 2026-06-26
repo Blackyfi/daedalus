@@ -214,7 +214,26 @@ export default function ProjectListPage() {
         </header>
         {projects.isLoading && <p className="text-muted text-sm">Loading…</p>}
         {projects.data?.length === 0 && (
-          <p className="text-muted text-sm">No projects yet — create one →</p>
+          <div className="rounded border border-border bg-panel2 p-4 text-sm">
+            <p className="mb-2 font-medium">Welcome to Daedalus — let's get your first task running:</p>
+            <ol className="ml-4 list-decimal space-y-1 text-muted">
+              <li>
+                <button
+                  className="link underline"
+                  onClick={() => setDiscoverOpen(true)}
+                >
+                  Discover repos
+                </button>{" "}
+                under your workspaces root and register one as a project.
+              </li>
+              <li>Open the project, drop a few ideas in the Idea box, and click <em>Plan from ideas</em>.</li>
+              <li>Review the drafted plan, confirm it, then ▶ Run a task and watch it live.</li>
+            </ol>
+            <p className="mt-2 text-xs text-muted">
+              Tip: if hardware-key login or magic links misbehave, make sure
+              <code className="mx-1">DAEDALUS_PUBLIC_URL</code> matches the host you browse to.
+            </p>
+          </div>
         )}
         <div className="grid gap-2">
           {projects.data?.map((p) => (

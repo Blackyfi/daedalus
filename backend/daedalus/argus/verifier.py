@@ -352,6 +352,22 @@ def detect_tampering(diff_text: str) -> list[dict[str, Any]]:
     return findings
 
 
+_TRANSIENT_RE = re.compile(
+    r"connection reset|connection refused|temporarily unavailable|timed out|timeout"
+    r"|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network is unreachable"
+    r"|could not resolve host|503 service unavailable|429 too many requests"
+    r"|rate limit|deadline exceeded|broken pipe",
+    re.IGNORECASE,
+)
+
+
+def is_transient_failure(verify_output: str) -> bool:
+    """Heuristic: did verification fail for an infra/transient reason (network,
+    timeout, rate-limit) rather than the agent's code (#24)? Callers can retry
+    a verify once on transient failure before declaring needs_fixes."""
+    return bool(verify_output) and bool(_TRANSIENT_RE.search(verify_output))
+
+
 def extract_agent_final_text(transcript: str) -> str:
     """Pull the agent's final summary out of a Claude Code stream-json
     transcript. The CLI writes one JSON object per line; the last one with
